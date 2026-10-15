@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 
 export const name = 'mcp-skill-manager';
-export const inject = ['configEditor', 'skills', 'tools'];
+export const inject = ['configEditor', 'skills', 'tools', 'connection'];
+
+const rpcChannel = 'dsh-mcp-skill-manager';
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),
@@ -79,6 +81,33 @@ function redactServer(server) {
   };
 }
 
+function readMcpCatalog(ctx, config, request) {
+  const requestedPath = typeof request.configPath === 'string' && request.configPath.trim()
+    ? request.configPath
+    : config.mcpConfigPath;
+  const parts = typeof requestedPath === 'string' && requestedPath.trim()
+    ? pathParts(requestedPath)
+    : undefined;
+  const entries = ctx.configEditor.configuration().map(({ entry, inherited, override }) => {
+    const effective = mergeRecords(
+      isRecord(inherited) ? inherited : {},
+      isRecord(override) ? override : {},
+    );
+    const servers = parts ? getAt(effective, parts) : undefined;
+    return {
+      entry: {
+        id: entryKeys(entry)[0] ?? 'unknown-entry',
+        patchId: entry?.patchId,
+        name: entry?.name,
+      },
+      servers: isRecord(servers)
+        ? Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)]))
+        : {},
+    };
+  });
+  return { configPath: parts?.join('.') ?? '', entries };
+}
+
 function tool(name, description, parameters, execute) {
   const required = Object.entries(parameters)
     .filter(([, schema]) => schema.required === true)
@@ -144,7 +173,7 @@ export function apply(ctx, config = {}) {
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
   const runtimeProvider = `${name}:${randomUUID()}`;
-  const disposeMcpTool = ctx.tools.register(tool(
+  const mcpTool = tool(
     'dsh_manage_mcp_servers',
     'List, add or update, and remove MCP server records in a DSH configuration entry. Listing redacts configured values. Supply configPath explicitly or configure mcpConfigPath on this plugin.',
     {
@@ -229,9 +258,10 @@ export function apply(ctx, config = {}) {
         ...(action === 'remove' && inheritedHasServer ? { inheritedRemains: true } : {}),
       };
     },
-  ));
+  );
+  const disposeMcpTool = ctx.tools.register(mcpTool);
 
-  const disposeSkillTool = ctx.tools.register(tool(
+  const skillsTool = tool(
     'dsh_manage_skills',
     'List and read the effective DSH skill catalog, or register and unregister an in-memory runtime skill for this plugin lifetime.',
     {
@@ -308,14 +338,72 @@ export function apply(ctx, config = {}) {
       }
       throw new TypeError('action must be list, get, register, or unregister');
     },
-  ));
+  );
+  const disposeSkillTool = ctx.tools.register(skillsTool);
+  const disposeRpc = ctx.connection.rpc.handle(rpcChannel, async (method, payload, signal) => {
+    try {
+      if (payload !== undefined && !isRecord(payload)) {
+        throw new TypeError('RPC arguments must be an object');
+      }
+      const args = isRecord(payload) ? payload : {};
+      signal.throwIfAborted();
+      let value;
+      switch (method) {
+        case 'mcp.catalog':
+          value = readMcpCatalog(ctx, config, args);
+          break;
+        case 'mcp.upsert':
+          value = await mcpTool.execute({ ...args, action: 'upsert' }, { signal });
+          break;
+        case 'mcp.remove':
+          value = await mcpTool.execute({ ...args, action: 'remove' }, { signal });
+          break;
+        case 'skills.list': {
+          const result = await skillsTool.execute({ action: 'list' }, { signal });
+          value = {
+            skills: result.skills.map((skill) => ({
+              name: skill.name,
+              description: skill.description,
+              source: skill.source,
+              canUnregister: runtimeSkills.has(skill.name),
+            })),
+          };
+          break;
+        }
+        case 'skills.get':
+          value = await skillsTool.execute({ ...args, action: 'get' }, { signal });
+          break;
+        case 'skills.register':
+          value = await skillsTool.execute({ ...args, action: 'register' }, { signal });
+          break;
+        case 'skills.unregister':
+          value = await skillsTool.execute({ ...args, action: 'unregister' }, { signal });
+          break;
+        default:
+          throw new TypeError('Unknown mcp-skill-manager RPC method');
+      }
+      return { ok: true, value };
+    } catch (error) {
+      const knownError = error instanceof TypeError
+        || (error instanceof Error && /^(No active config entry matches |Cannot remove inherited MCP server |Runtime skill .* is already registered|Skill .* (already exists in the effective DSH catalog|is currently being registered|did not become the effective runtime definition))/.test(error.message));
+      return {
+        ok: false,
+        error: {
+          code: 'MCP_SKILL_MANAGER_OPERATION_FAILED',
+          message: knownError ? error.message : 'Host operation failed; check the DSH logs.',
+          details: {},
+        },
+      };
+    }
+  });
 
   ctx.effect(function* () {
     yield async () => {
+      await disposeRpc();
       disposeMcpTool();
       disposeSkillTool();
       for (const dispose of runtimeSkills.values()) dispose();
       runtimeSkills.clear();
     };
-  }, 'mcp-skill-manager tools and runtime skills');
+  }, 'mcp-skill-manager tools, settings RPC, and runtime skills');
 }

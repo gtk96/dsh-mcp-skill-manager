@@ -32,13 +32,15 @@ server 定义会经 `configEditor.edit()` 写入并由 DSH Loader 校验和应�
 
 ## 安装与开发
 
-本仓库采用原生 ESM 入口 `index.js`，无构建步骤。将仓库作为 DSH 插件安装后，在配置中设置例如：
+此仓库同时是一个 DSH bundle。通过 DSH 插件管理器从 GitHub 安装该 bundle 后，`cordis.patch.yml` 会向 Profile 注册 `mcp-skill-manager` 插件行；插件入口为原生 ESM `index.js`，无需构建。
+
+插件配置可选设置 MCP server map 路径，例如：
 
 ```yaml
 mcpConfigPath: mcp.servers
 ```
 
-上例中的路径仅为格式示例；应填写当前 DSH Profile 中实际承载 MCP server map 的路径。MCP 管理工具读取配置条目，不会尝试连接或启动 MCP server。
+上例中的路径仅为格式示例；应填写当前 DSH Profile 中实际承载 MCP server map 的路径。也可在每次 MCP 操作时单独提供 `configPath`。MCP 管理工具读取配置条目，不会尝试连接或启动 MCP server。
 
 插件会隐藏返回结果中的凭据类字段，并隐藏普通字符串配置值。添加 MCP server 时，应使用运行环境支持的凭据引用方式，不要把密钥提交到仓库。
 

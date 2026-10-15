@@ -6,6 +6,17 @@
   "main": "./index.js",
   "exports": "./index.js",
   "license": "MIT",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/gtk96/dsh-mcp-skill-manager.git"

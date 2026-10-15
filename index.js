@@ -1,0 +1,280 @@
+import { randomUUID } from 'node:crypto';
+import z from '@deepseek-ai/schemastery';
+import { defineTool } from '@deepseek-ai/dsh-tools';
+import { isSkillName } from '@deepseek-ai/dsh-skill';
+
+export const name = 'mcp-skill-manager';
+export const inject = ['configEditor', 'skills', 'tools'];
+export const Config = z.object({
+  /** Dot path to the MCP server map in the selected DSH config entry. */
+  mcpConfigPath: z.string().optional(),
+});
+
+const secretName = /secret|token|password|credential|authorization|api.?key/i;
+const forbiddenPathParts = new Set(['__proto__', 'prototype', 'constructor']);
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function pathParts(path) {
+  if (typeof path !== 'string' || !path.trim()) {
+    throw new TypeError('configPath must be a non-empty dot path');
+  }
+  const parts = path.split('.').map((part) => part.trim());
+  if (parts.some((part) => !part || forbiddenPathParts.has(part))) {
+    throw new TypeError('configPath contains an invalid path segment');
+  }
+  return parts;
+}
+
+function getAt(root, parts) {
+  let value = root;
+  for (const part of parts) {
+    if (!isRecord(value)) return undefined;
+    value = value[part];
+  }
+  return value;
+}
+
+function updatePath(root, parts, updateLeaf) {
+  const next = { ...root };
+  let source = root;
+  let target = next;
+  for (const part of parts.slice(0, -1)) {
+    const sourceChild = isRecord(source[part]) ? source[part] : {};
+    const targetChild = { ...sourceChild };
+    target[part] = targetChild;
+    source = sourceChild;
+    target = targetChild;
+  }
+  const leafKey = parts.at(-1);
+  const sourceLeaf = isRecord(source[leafKey]) ? source[leafKey] : {};
+  target[leafKey] = updateLeaf({ ...sourceLeaf });
+  return next;
+}
+
+function mergeRecords(base, override) {
+  const result = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    result[key] = isRecord(value) && isRecord(result[key])
+      ? mergeRecords(result[key], value)
+      : value;
+  }
+  return result;
+}
+
+function entryKeys(entry) {
+  return [entry?.id, entry?.patchId, entry?.name]
+    .filter((value) => typeof value === 'string');
+}
+
+function redactServer(server) {
+  if (!isRecord(server)) return { type: Array.isArray(server) ? 'array' : typeof server };
+  return {
+    fields: Object.keys(server),
+    values: Object.fromEntries(
+      Object.entries(server)
+        .filter(([key]) => !secretName.test(key))
+        .map(([key, value]) => [key, typeof value === 'string' ? '[configured]' : Array.isArray(value) ? '[array]' : isRecord(value) ? '[object]' : value]),
+    ),
+  };
+}
+
+function tool(name, description, parameters, execute) {
+  return defineTool({
+    name,
+    description,
+    parameters,
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    execute,
+  });
+}
+
+function requireString(value, label) {
+  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} is required`);
+  return value.trim();
+}
+
+export function apply(ctx, config = {}) {
+  const runtimeSkills = new Map();
+  const pendingSkills = new Set();
+  const runtimeProvider = `${name}:${randomUUID()}`;
+  const disposeMcpTool = ctx.tools.register(tool(
+    'dsh_manage_mcp_servers',
+    'List, add or update, and remove MCP server records in a DSH configuration entry. Listing redacts configured values. Supply configPath explicitly or configure mcpConfigPath on this plugin.',
+    {
+      action: { type: 'string', required: true, enum: ['list', 'upsert', 'remove'] },
+      entryId: { type: 'string', description: 'Entry id, patch id, or name returned by the list action.' },
+      configPath: { type: 'string', description: 'Dot path to the MCP server map, for example the path configured for this plugin.' },
+      name: { type: 'string', description: 'MCP server key for upsert or remove.' },
+      definition: { type: 'object', additionalProperties: true, description: 'MCP server configuration object for upsert.' },
+    },
+    async (args, exec) => {
+      exec.signal.throwIfAborted();
+      const action = requireString(args.action, 'action');
+      const configuredPath = args.configPath ?? config.mcpConfigPath;
+      const rows = ctx.configEditor.configuration();
+      if (action === 'list') {
+        const parts = pathParts(configuredPath);
+        return {
+          action,
+          configPath: parts.join('.'),
+          entries: rows.map(({ entry, inherited, override }) => {
+            const effective = mergeRecords(
+              isRecord(inherited) ? inherited : {},
+              isRecord(override) ? override : {},
+            );
+            const servers = getAt(effective, parts);
+            if (!isRecord(servers)) return undefined;
+            return {
+              entry: {
+                id: entryKeys(entry)[0] ?? 'unknown-entry',
+                patchId: entry?.patchId,
+                name: entry?.name,
+              },
+              servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)])),
+            };
+          }).filter(Boolean),
+        };
+      }
+
+      const entryId = requireString(args.entryId, 'entryId');
+      const parts = pathParts(configuredPath);
+      const row = rows.find(({ entry }) => entryKeys(entry).includes(entryId));
+      if (!row) throw new Error(`No active config entry matches ${entryId}`);
+      const serverName = requireString(args.name, 'name');
+      if (forbiddenPathParts.has(serverName)) throw new TypeError('name is not a valid server key');
+      if (action === 'upsert' && !isRecord(args.definition)) {
+        throw new TypeError('definition must be a JSON object');
+      }
+      if (action !== 'upsert' && action !== 'remove') throw new TypeError('action must be list, upsert, or remove');
+
+      const inheritedServers = getAt(row.inherited, parts);
+      const overrideServers = getAt(row.override, parts);
+      const inheritedHasServer = isRecord(inheritedServers) && Object.hasOwn(inheritedServers, serverName);
+      const overrideHasServer = isRecord(overrideServers) && Object.hasOwn(overrideServers, serverName);
+      if (action === 'remove' && inheritedHasServer && !overrideHasServer) {
+        throw new Error(`Cannot remove inherited MCP server ${serverName}; edit its owning config entry instead`);
+      }
+      if (action === 'remove' && !overrideHasServer) {
+        return { action, entryId, configPath: parts.join('.'), name: serverName, changed: false };
+      }
+
+      await ctx.configEditor.edit(row.entry, (current) => {
+        if (action === 'upsert') {
+          return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
+            servers[serverName] = args.definition;
+            return servers;
+          });
+        }
+        if (action === 'remove') {
+          return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
+            delete servers[serverName];
+            return servers;
+          });
+        }
+        throw new TypeError('action must be list, upsert, or remove');
+      });
+      return {
+        action,
+        entryId,
+        configPath: parts.join('.'),
+        name: serverName,
+        changed: true,
+        ...(action === 'remove' && inheritedHasServer ? { inheritedRemains: true } : {}),
+      };
+    },
+  ));
+
+  const disposeSkillTool = ctx.tools.register(tool(
+    'dsh_manage_skills',
+    'List and read the effective DSH skill catalog, or register and unregister an in-memory runtime skill for this plugin lifetime.',
+    {
+      action: { type: 'string', required: true, enum: ['list', 'get', 'register', 'unregister'] },
+      name: { type: 'string', description: 'Skill name for get, register, or unregister.' },
+      description: { type: 'string' },
+      content: { type: 'string', description: 'Skill body content for register.' },
+      whenToUse: { type: 'string' },
+    },
+    async (args, exec) => {
+      exec.signal.throwIfAborted();
+      const action = requireString(args.action, 'action');
+      if (action === 'list') {
+        const skills = await ctx.skills.list({ signal: exec.signal });
+        return { action, skills };
+      }
+      const skillName = requireString(args.name, 'name');
+      if (action === 'get') {
+        const skill = await ctx.skills.get(skillName, { signal: exec.signal });
+        return { action, skill: skill ?? null };
+      }
+      if (action === 'register') {
+        if (!isSkillName(skillName)) {
+          throw new TypeError('name must be a kebab-case skill name');
+        }
+        if (runtimeSkills.has(skillName) || pendingSkills.has(skillName)) {
+          throw new Error(`Runtime skill ${skillName} is already registered by this plugin`);
+        }
+        const description = requireString(args.description, 'description');
+        const content = requireString(args.content, 'content');
+        pendingSkills.add(skillName);
+        let dispose;
+        try {
+          const existing = await ctx.skills.list({ signal: exec.signal });
+          exec.signal.throwIfAborted();
+          if (existing.some((skill) => skill.name === skillName)) {
+            throw new Error(`Skill ${skillName} already exists in the effective DSH catalog`);
+          }
+          dispose = ctx.skills.register({
+            name: skillName,
+            description,
+            content,
+            source: 'runtime',
+            provider: runtimeProvider,
+            ...(typeof args.whenToUse === 'string' ? { whenToUse: args.whenToUse } : {}),
+            invocation: { modelInvocable: true, userInvocable: true },
+          });
+          const registered = await ctx.skills.get(skillName, { signal: exec.signal });
+          if (
+            !registered
+            || registered.source !== 'runtime'
+            || registered.provider !== runtimeProvider
+            || registered.content !== content
+            || registered.description !== description
+          ) {
+            throw new Error(`Skill ${skillName} did not become the effective runtime definition`);
+          }
+          runtimeSkills.set(skillName, dispose);
+          return { action, name: skillName, persisted: false };
+        } catch (error) {
+          dispose?.();
+          throw error;
+        } finally {
+          pendingSkills.delete(skillName);
+        }
+      }
+      if (action === 'unregister') {
+        if (pendingSkills.has(skillName)) throw new Error(`Skill ${skillName} is currently being registered`);
+        const dispose = runtimeSkills.get(skillName);
+        if (!dispose) return { action, name: skillName, changed: false };
+        dispose();
+        runtimeSkills.delete(skillName);
+        return { action, name: skillName, changed: true };
+      }
+      throw new TypeError('action must be list, get, register, or unregister');
+    },
+  ));
+
+  ctx.effect(function* () {
+    yield async () => {
+      disposeMcpTool();
+      disposeSkillTool();
+      for (const dispose of runtimeSkills.values()) dispose();
+      runtimeSkills.clear();
+    };
+  }, 'mcp-skill-manager tools and runtime skills');
+}

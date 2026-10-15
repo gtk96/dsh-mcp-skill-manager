@@ -42,11 +42,23 @@ Client 页面通过 Host RPC 调用同一套 MCP 与 Skill 管理逻辑。MCP �
 
 ## 插件接口
 
-Host 插件按 Cordis 插件约定导出 `name`、`inject`、`Config` 和 `apply`，依赖 DSH 的 `configEditor`、`skills`、`tools` 与 `connection` Services。Client 入口 `client.js` 依赖 `slots`，并注册 `settings.section`。Host RPC 由 `connection.rpc.handle()` 提供给设置页面；插件退出时会注销工具、RPC 路由和本插件注册的 runtime Skill。
+Host 插件按 Cordis 插件约定导出 `name`、`inject`、`Config` 和 `apply`，依赖 DSH 的 `configEditor`、`skills`、`tools` 与 `connection` Services。Client 入口 `client.js` 通过 ModuleLoader 加载，依赖 `slots`、`connection`，并注册 `settings.section`。设置页面通过 `ctx.connection.rpc.call('/dsh-mcp-skill-manager', method, args)` 调用 Host 的 `connection.rpc.handle()` 路由；样式由插件生命周期清理。插件退出时会注销工具、RPC 路由和本插件注册的 runtime Skill。
 
 ## 安装与开发
 
-此仓库同时是一个 DSH bundle。通过 DSH 插件管理器从 GitHub 安装该 bundle 后，`cordis.patch.yml` 会向 Profile 注册 `mcp-skill-manager` 插件行。Host 入口为原生 ESM `index.js`，Client 设置页入口为 `client.js`，二者均由包清单直接提供，无需构建。
+此仓库同时是一个 DSH bundle。CLI 管理的 Profile 可以使用以下快速安装命令（将 `web` 替换为目标 Profile 名称）：
+
+```sh
+dsh plugin --profile web add "git+https://github.com/gtk96/dsh-mcp-skill-manager.git#main" --registry https://registry.npmjs.org/
+```
+
+`desktop` Profile 由 Electron 应用管理，普通 `dsh` CLI 不接受该 Profile。桌面版请在侧边栏插件管理器选择安装 Bundle，把下面的目标粘贴到安装目标，并使用 npm registry `https://registry.npmjs.org/`：
+
+```text
+git+https://github.com/gtk96/dsh-mcp-skill-manager.git#main
+```
+
+安装后重启 DSH，让新 Client 入口参与 Web boot。Bundle 的 `cordis.patch.yml` 会向 Profile 注册 `mcp-skill-manager` 插件行。Host 入口为原生 ESM `index.js`，Client 设置页入口为 `client.js`，二者均由包清单直接提供，无需构建。
 
 插件配置可选设置 MCP server map 路径，例如：
 

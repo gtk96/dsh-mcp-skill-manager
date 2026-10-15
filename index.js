@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery';
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools', 'connection'];
 
-const rpcChannel = 'dsh-mcp-skill-manager';
+const rpcChannel = '/dsh-mcp-skill-manager';
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),

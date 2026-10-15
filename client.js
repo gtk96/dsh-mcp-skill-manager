@@ -48,8 +48,9 @@ function errorText(error) {
   return error && typeof error.message === "string" ? error.message : "操作失败，请稍后重试。";
 }
 
+function createManagerPage(connection) {
 async function callHost(method, args) {
-  const result = await host.call(method, args);
+  const result = await connection.rpc.call("/dsh-mcp-skill-manager", method, args ?? {});
   if (isRecord(result) && Object.prototype.hasOwnProperty.call(result, "ok")) {
     if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
     return result.value;
@@ -369,22 +370,26 @@ function ManagerPage() {
     tab === "mcp" ? renderMcp() : renderSkills());
 }
 
-function apply(ctx) {
-  ctx.effect(() => {
-    const removeStyles = styles.insert(css);
-    const disposeSection = ctx.slots.register({
-      name: "settings.section",
-      id: "mcp-skill-manager",
-      order: 25,
-      label: "MCP & Skills",
-    }, ManagerPage);
-    return () => {
-      disposeSection();
-      removeStyles();
-    };
-  }, "mcp-skill-manager settings section");
+return ManagerPage;
 }
 
-exports.inject = ["slots"];
+function apply(ctx) {
+  const Page = createManagerPage(ctx.connection);
+  ctx.effect(() => {
+    const tag = document.createElement("style");
+    tag.dataset.plugin = "dsh-mcp-skill-manager";
+    tag.textContent = css;
+    document.head.appendChild(tag);
+    return () => tag.remove();
+  }, "mcp-skill-manager stylesheet");
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "mcp-skill-manager",
+    order: 25,
+    label: "MCP & Skills",
+  }, Page));
+}
+
+exports.inject = ["slots", "connection"];
 exports.apply = apply;
 return module.exports; } });

@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 
 export const name = 'mcp-skill-manager';
-export const inject = ['configEditor', 'skills', 'tools', 'connection', 'webServer'];
+export const inject = ['configEditor', 'skills', 'tools', 'connection'];
 
-const rpcChannel = '/dsh-mcp-skill-manager';
+const rpcPrefix = 'mcp-skill-manager.';
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),
@@ -340,7 +340,7 @@ export function apply(ctx, config = {}) {
     },
   );
   const disposeSkillTool = ctx.tools.register(skillsTool);
-  const disposeRpc = ctx.connection.rpc.handle(rpcChannel, async (method, payload, signal) => {
+  const handleRpc = async (method, payload, signal) => {
     try {
       if (payload !== undefined && !isRecord(payload)) {
         throw new TypeError('RPC arguments must be an object');
@@ -395,7 +395,32 @@ export function apply(ctx, config = {}) {
         },
       };
     }
-  });
+  };
+  const rpcMethods = ['mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
+  const disposeRpc = ctx.effect(function* () {
+    for (const method of rpcMethods) {
+      const endpoint = rpcPrefix + method;
+      yield ctx.connection.fetch.register({
+        path: '/api/' + endpoint,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        async fetch(request) {
+          let message;
+          try {
+            message = await request.json();
+          } catch {
+            return new Response('Invalid JSON request', { status: 400 });
+          }
+          if (!isRecord(message) || message.type !== 'client-request'
+            || typeof message.rpcId !== 'string' || message.method !== endpoint) {
+            return new Response('Invalid RPC request', { status: 400 });
+          }
+          const result = await handleRpc(method, message.payload, request.signal);
+          return Response.json({ type: 'server-response', rpcId: message.rpcId, result });
+        },
+      });
+    }
+  }, 'mcp-skill-manager API routes');
 
   ctx.effect(function* () {
     yield async () => {

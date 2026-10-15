@@ -50,7 +50,7 @@ function errorText(error) {
 
 function createManagerPage(connection) {
 async function callHost(method, args) {
-  const result = await connection.rpc.call("/dsh-mcp-skill-manager", method, args ?? {});
+  const result = await connection.rpc.call("/api", "mcp-skill-manager." + method, args ?? {});
   if (isRecord(result) && Object.prototype.hasOwnProperty.call(result, "ok")) {
     if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
     return result.value;

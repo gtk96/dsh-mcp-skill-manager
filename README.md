@@ -42,7 +42,7 @@ Client 页面通过 Host RPC 调用同一套 MCP 与 Skill 管理逻辑。MCP �
 
 ## 插件接口
 
-Host 插件按 Cordis 插件约定导出 `name`、`inject`、`Config` 和 `apply`，依赖 DSH 的 `configEditor`、`skills`、`tools` 与 `connection` Services。Client 入口 `client.js` 通过 ModuleLoader 加载，依赖 `slots`、`connection`，并注册 `settings.section`。设置页面通过 `ctx.connection.rpc.call('/dsh-mcp-skill-manager', method, args)` 调用 Host 的 `connection.rpc.handle()` 路由；样式由插件生命周期清理。插件退出时会注销工具、RPC 路由和本插件注册的 runtime Skill。
+Host 插件按 Cordis 插件约定导出 `name`、`inject`、`Config` 和 `apply`，依赖 DSH 的 `configEditor`、`skills`、`tools`、`connection` 与 `webServer` Services。Client 入口 `client.js` 通过 ModuleLoader 加载，依赖 `slots`、`connection`，并注册 `settings.section`。设置页面通过 `ctx.connection.rpc.call('/dsh-mcp-skill-manager', method, args)` 调用 Host 的 `connection.rpc.handle()` 路由；样式由插件生命周期清理。插件退出时会注销工具、RPC 路由和本插件注册的 runtime Skill。
 
 ## 安装与开发
 

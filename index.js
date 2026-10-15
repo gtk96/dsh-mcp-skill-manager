@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 
 export const name = 'mcp-skill-manager';
-export const inject = ['configEditor', 'skills', 'tools', 'connection'];
+export const inject = ['configEditor', 'skills', 'tools', 'connection', 'webServer'];
 
 const rpcChannel = '/dsh-mcp-skill-manager';
 export const Config = z.object({

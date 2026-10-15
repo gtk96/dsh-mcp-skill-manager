@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
-import { defineTool } from '@deepseek-ai/dsh-tools';
-import { isSkillName } from '@deepseek-ai/dsh-skill';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -82,16 +80,59 @@ function redactServer(server) {
 }
 
 function tool(name, description, parameters, execute) {
-  return defineTool({
+  const required = Object.entries(parameters)
+    .filter(([, schema]) => schema.required === true)
+    .map(([key]) => key);
+  const properties = Object.fromEntries(
+    Object.entries(parameters).map(([key, schema]) => {
+      const { required: _required, ...jsonSchema } = schema;
+      return [key, jsonSchema];
+    }),
+  );
+  const parameterSchema = {
+    type: 'object',
+    properties,
+    ...(required.length ? { required } : {}),
+    additionalProperties: true,
+  };
+
+  return {
     name,
     description,
-    parameters,
+    parameters: parameterSchema,
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
-    execute,
-  });
+    async execute(args, exec) {
+      if (!isRecord(args)) throw new TypeError('Tool arguments must be an object');
+      for (const key of required) {
+        if (!Object.hasOwn(args, key)) throw new TypeError(`${key} is required`);
+      }
+      for (const [key, schema] of Object.entries(parameters)) {
+        const value = args[key];
+        if (value === undefined) continue;
+        const validType = schema.type === 'object'
+          ? isRecord(value)
+          : schema.type === 'array'
+            ? Array.isArray(value)
+            : schema.type === 'null'
+              ? value === null
+              : schema.type === 'integer'
+                ? Number.isInteger(value)
+                : typeof value === schema.type;
+        if (!validType) throw new TypeError(`${key} must be ${schema.type}`);
+        if (schema.enum && !schema.enum.includes(value)) {
+          throw new TypeError(`${key} must be one of: ${schema.enum.join(', ')}`);
+        }
+      }
+      return execute(args, exec);
+    },
+  };
+}
+
+function isSkillName(value) {
+  return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 }
 
 function requireString(value, label) {

@@ -21,12 +21,7 @@
     "type": "git",
     "url": "https://github.com/gtk96/dsh-mcp-skill-manager.git"
   },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4"
-  },
   "dependencies": {
-    "@deepseek-ai/dsh-skill": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4"
   }
 }

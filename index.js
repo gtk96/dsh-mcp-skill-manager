@@ -5,7 +5,7 @@ export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
-  mcpConfigPath: z.string().optional(),
+  mcpConfigPath: z.string().default(''),
 });
 
 const secretName = /secret|token|password|credential|authorization|api.?key/i;

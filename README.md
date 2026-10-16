@@ -1,74 +1,94 @@
 # DSH MCP & Skill Manager
 
-用于 DeepSeek Harness（DSH）的 MCP 配置映射编辑器与 Skill 目录管理插件。
+用于 DeepSeek Harness（DSH）的会话能力发现、MCP 配置来源查看和 Runtime Skill 管理插件。
 
 ## 安装
 
-需要已安装 DSH，兼容范围为 `^0.2.0-rc.2`。包通过可选 peer 声明兼容范围，包管理器不会为了安装本插件另外下载一套 DSH；DSH 安装器和启动器仍会执行版本兼容检查。
+需要已安装 DSH，兼容范围为 `^0.2.0-rc.2`。DSH peer 为 optional，包管理器不会因此另外安装一套 DSH；DSH 自身仍执行版本兼容检查。
 
-CLI 管理的 Profile 可以使用以下命令。安装目标为公开 HTTPS 源码压缩包，不依赖本机 Git 或 SSH 配置：
+CLI 管理的 Profile 使用公开 HTTPS 源码压缩包安装，不依赖本机 Git/SSH：
 
 ```sh
 dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main" --registry https://registry.npmjs.org/
 ```
 
-将 `web` 替换为需要安装的 CLI Profile。Host 管理工具需要该 Profile 提供 `configEditor`、`skills`、`tools` 服务；设置页面另需 Web `connection` 和 Settings 服务。缺少 Web 连接时，仅挂载 Host 工具。
+将 `web` 替换为目标 CLI Profile。Host 需要 `configEditor`、`skills`、`tools` 服务；会话发现使用可选的 `agents`、`sessionQuery`、`sessions`、`agentPresets` 服务。设置页面需要 Web connection 和 Settings。没有 Web connection 时仍可挂载 Host 工具。
 
-`desktop` Profile 由 Electron 应用管理，普通 `dsh` CLI 不接受该 Profile。桌面版在侧边栏插件管理器选择安装 Bundle，粘贴以下安装目标，registry 使用 `https://registry.npmjs.org/`：
+`desktop` Profile 由 Electron 管理，普通 CLI 不接受它。在桌面插件管理器安装 Bundle 时使用：
 
 ```text
 https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main
 ```
 
-替换已经加载的包后重启 DSH，让 Host 和 Client 读取同一份入口文件。Bundle 的 `cordis.patch.yml` 向 Profile 注册 `mcp-skill-manager` 插件行。Host 入口为 `index.js`，Client 设置页入口为 `client.js`，无需构建或安装脚本。
+若安装器返回 `restart-required`，由使用者选择合适的维护时机重启应用。本插件不触发重启或停止正在运行的任务。入口由 Bundle 的 `cordis.patch.yml` 注册，无安装或构建脚本。
 
-## MCP 配置映射
+## 选择会话
 
-`dsh_manage_mcp_servers` 支持在指定配置条目、指定映射路径下查看、新增、替换或移除 server 定义。路径使用点分隔，路径段本身不能包含点号。插件默认路径可配置为：
+Settings 的 **MCP & Skills** 页面提供“能力视图”选择器。初始值为 Settings 打开时主视图中的会话；也可选择其他会话或 Profile 全局视图。
+
+会话目录只读取 id、工作目录、预设身份和是否具有 live Agent，不读取对话消息。目标会话需有 live Agent；未加载或已退出的会话返回明确错误，不用全局目录替代，也不在后台创建或恢复 Agent。
+
+Skill 查询使用所选 Agent 的作用域、会话工作目录及其预设中的 Skill 服务。列表和正文使用相同上下文；会话切换会失效旧请求、清空旧正文及编辑确认。迟到响应与上下文不匹配的响应不能覆盖当前视图。读取过程中 Agent 被替换、卸载或切换预设时，返回错误并要求刷新。
+
+## MCP 发现及来源边界
+
+主视图展示三类信息：
+
+- **MCP 命名候选**：所选视图中实际可见、名称以 `mcp__` 开头的工具，保留完整 public name。该前缀只能说明名称符合命名约定，不能证明工具确实来自 MCP 桥。
+- **原生 MCP 配置来源**：Profile 内 `@deepseek-ai/dsh-mcp-client` 配置条目，以及所选会话预设中的同类条目。展示白名单标识、serverName（来源提供时）、预设和插件阶段，不返回 command、env、URL 或 headers。
+- **全部可见工具**：支持按名称检索，覆盖未遵循上述命名约定的其他工具。定义与 Profile 相同只表示定义等价，不作为注册来源证明。
+
+当前 DSH MCP 桥没有公开完整的 server provenance 或连接状态目录。工具名有归一化、截断和哈希规则，serverName 也允许双下划线，因此本插件不拆分 public name 来还原 server/raw tool 身份。普通插件同样可以注册同形名称，命名候选不能作为来源证明。
+
+断线后工具可能仍保留注册；插件 active 不代表连接成功。零工具或资源型 server 也可能不出现在工具目录。所有连接状态均为 `unknown`，页面不会把注册可见标为在线。`provenanceComplete` 和 `connectionStateSupported` 为 false；`complete` 仅表示已支持的来源读取成功，不表示所有 MCP 连接均已枚举。权威来源与状态需要 DSH MCP 桥提供只读元数据接口。
+
+`dsh_manage_mcp_servers` 的 `discover` 操作按调用 Agent 发现上述信息；`list` 在没有配置映射路径时也使用该发现视图。
+
+## 高级配置映射编辑
+
+MCP 页的高级折叠区管理指定配置条目、指定点分隔路径下的自定义 server 映射。默认路径可配置为：
 
 ```yaml
 mcpConfigPath: mcp.servers
 ```
 
-这只是自定义映射的格式示例，必须填写实际存在的配置路径。**此映射列表不代表整个 Profile 已接入的 MCP。** DSH 原生 MCP 每台服务器对应一个 `@deepseek-ai/dsh-mcp-client` 插件条目，应在 DSH 插件管理器中查看和管理。本插件不会自动导入 Claude、Codex 的 MCP 配置，也不会连接或启动 server。
+此格式只是示例，必须填写实际映射路径。`list` 在提供路径或配置了默认路径时返回该映射；`upsert`、`remove` 编辑该映射。它不连接或启动 server，也不自动导入其他客户端配置。
 
-列表从 Loader 当前有效配置读取，返回 server 名称与脱敏字段摘要。页面编辑、移除操作绑定成功读取的路径；修改路径或配置条目会关闭旧表单与移除确认，路径重新读取成功后才能操作。凭据类字段值不返回，普通字符串值显示为 `[configured]`。列表返回的 `entry.id`、`entry.patchId` 或 `entry.name` 可作为后续操作的 `entryId`；同名插件有多个条目时应使用唯一 id。
+列表读取 Loader 当前有效配置，字符串值只显示 `[configured]`，凭据类字段值不返回。写入绑定成功读取的路径，路径或条目变化会关闭旧表单和移除确认。写入只允许在 Profile 全局视图进行；提交期间不能切换会话。
 
-编辑经 `configEditor.edit()` 校验、持久化并由 DSH Loader 应用，生成当前条目的完整配置覆盖。新增或更新必须提交完整 server JSON 对象，目标 server 的省略字段不会自动保留；所选配置的其他字段保持其当前值。已有内容不会回填到编辑表单。
+`entryId` 接受目录返回的唯一 id、patch id 或无歧义模块名。编辑通过 `configEditor.edit()` 校验、持久化并由 Loader 应用。更新需提供完整 server JSON，目标 server 的省略字段不会自动保留；其他配置字段保留当前值。
 
-移除操作只处理本地覆盖：没有对应覆盖时返回 `changed: false`；仅来自继承配置的 server 会拒绝移除。存在同名继承定义时，移除覆盖会显式恢复继承定义，并返回 `inheritedRemains: true`；继承来源文件保持原样。编辑失败由 DSH 返回错误。
+移除只处理本地覆盖。仅继承的 server 拒绝移除；无对应覆盖返回 `changed: false`；同名继承定义存在时显式恢复它并返回 `inheritedRemains: true`，不修改继承来源。
 
-## Skill 目录
+## Skill 管理
 
-`dsh_manage_skills` 支持：
+`dsh_manage_skills` 支持目录、正文及本插件生命周期内的 Runtime 注册/注销。目录返回 `complete` 和视图 `scope`；发现未完成或失败不作为已确认的空目录。页面展示 source、provider 和可用的本地路径，不展示远程资源 URL。
 
-- 列出目录，返回发现完整性 `complete` 和视图 `scope`。
-- 按名称读取 Skill 正文。
-- 注册和注销本插件生命周期内的 Runtime Skill；有效目录中已有的名称会拒绝注册，目录发现未完成时也会拒绝注册或回滚本次注册。
+Agent 调用工具时读取其自身作用域与工作目录；页面按所选会话读取。Runtime 注册及注销属于 Profile 全局操作，页面需切换到全局视图。已有有效同名定义或不完整发现会拒绝注册；注册后的发现不完整、校验失败或取消会回滚本次注册。
 
-Agent 调用工具时，读取使用该 Agent 的作用域和会话工作目录，和 DSH 原生 Skill 工具使用相同的查找上下文。没有 Agent 上下文的调用使用 Profile 全局视图。
+Runtime Skill 随插件退出注销。持久化 Skill 文件的安装、修改和移除不属于此插件能力。
 
-Settings 页面显示 **Profile 全局目录**，不含 Agent 专属层，不能作为当前会话或本机全部 Skill 的清单。发现未完成或读取失败时，页面会显示相应状态，而不是报告为已确认的空目录。
+## RPC 与生命周期
 
-Runtime Skill 仅在插件本次运行期间有效。持久化 Skill 文件的安装、编辑和移除不属于此插件能力；本插件也不自行扫描或导入其他应用的专用 Skill 目录。
+Client 使用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)`；Host 用精确 POST 路由复用 DSH `/api` 认证。只公开本插件标记的输入错误，外部 Service/provider 异常返回通用错误。
 
-## Settings 页面与接口
+方法包括 `contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
 
-Web Profile 的 Settings 中提供 **MCP & Skills** 页面，包含 MCP 映射和 Skills 两个标签。MCP 页可以选择配置条目、填写映射路径、读取摘要和提交完整定义；Skills 页可以刷新全局目录、读取正文、注册 Runtime Skill，并注销由本插件注册的 Runtime Skill。
+## 隔离回归
 
-Host 按 Cordis 约定导出 `name`、`inject`、`Config` 和 `apply`，硬依赖 `configEditor`、`skills`、`tools`。Web RPC 在可选 `connection` 注入生命周期内注册。Client 通过 ModuleLoader 加载，依赖 `slots`、`connection`，按 `settings.section` 声明生命周期注册页面。
+测试不启动 DSH，不访问当前 Profile、窗口或进程。使用真实 Cordis、React、React Test Renderer，业务服务为进程内样本。覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界和写入保护。
 
-Client 通过 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)` 调用 Host 的 `connection.fetch.register()` 精确 POST 路由，复用 DSH 的 `/api` 认证入口。响应使用 Connection 的 RPC envelope。仅公开本插件自身标记的输入错误，外部 Service 或 Skill provider 的意外异常返回通用错误。插件退出会清理路由、工具、Runtime Skill、样式和 Slot。
+```sh
+pnpm --dir test --ignore-workspace install --ignore-scripts
+node test/run.mjs
+```
 
-## 安装诊断
+共 36 项用例，覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界和写入保护。
 
-- `Host key verification failed`：pnpm 解析 GitHub Git 安装目标时可能调用 SSH；使用上方 HTTPS 压缩包地址安装。
-- `incompatible-version`：核对提示中的 DSH 实际版本与本包声明范围；一般安装操作不需要设置版本豁免。
-- 条目等待服务：检查目标 Profile 是否提供 Host 硬依赖；Web 设置页还需要 Settings 和连接服务。
-- 包管理器的 `deprecated` 提示：它描述依赖弃用，不等于插件激活失败；应结合提示中点名的包、安装退出码与 Host/Client 激活结果判断，不能仅凭一条弃用提示归因于本插件。
+测试依赖位于独立的 `test` 包，源码副本和报告位于其忽略目录 `.fixture`。每轮将执行副本与实际源码逐字节比较，记录 SHA256；所有用例和清理结束后写最终报告。隔离测试不替代真实浏览器、对方安装环境或外部 MCP 服务验收。
 
-配置凭据使用 DSH 支持的运行时引用方式，不要把密钥提交到仓库。
+## 安装提示
 
-## 开源许可
+`Host key verification failed` 可使用上方 HTTPS 压缩包地址避开 Git/SSH 解析。版本不兼容应核对 DSH 与包的兼容范围。环境依赖的 missing peer、deprecated 提示需按其实际来源归因，不能单凭 WARN 判定本插件激活失败。
 
 MIT，详见 [LICENSE](LICENSE)。

@@ -49,7 +49,7 @@ function errorText(error) {
 }
 
 function createManagerPage(connection) {
-async function callHost(method, args) {
+async function requestHost(method, args) {
   const result = await connection.rpc.call("/api", "mcp-skill-manager." + method, args ?? {});
   if (!isRecord(result) || typeof result.ok !== "boolean") {
     throw new Error("Host RPC 返回格式无效，请检查插件与 DSH 的版本兼容性。");
@@ -65,7 +65,24 @@ function Field(props) {
     props.hint ? h("span", { className: "dsh-msm-hint" }, props.hint) : null);
 }
 
-function ManagerPage() {
+function ManagerPage(props) {
+  const sessionRows = props.useSessions((state) => state.byId);
+  const initialSession = Object.values(sessionRows).find((session) => (session.retainedBy?.mainView ?? 0) > 0)?.id || "";
+  const [sessionId, setSessionId] = React.useState(initialSession);
+  const [contexts, setContexts] = React.useState([]);
+  const [contextsBusy, setContextsBusy] = React.useState(true);
+  const [contextsError, setContextsError] = React.useState("");
+  const [writeCount, setWriteCount] = React.useState(0);
+  const [runtimeCatalog, setRuntimeCatalog] = React.useState(null);
+  const [runtimeBusy, setRuntimeBusy] = React.useState(true);
+  const [runtimeError, setRuntimeError] = React.useState("");
+  const [toolFilter, setToolFilter] = React.useState("");
+  const contextsRequest = React.useRef(0);
+  const runtimeRequest = React.useRef(0);
+  const skillRequest = React.useRef(0);
+  const bodyRequest = React.useRef(0);
+  const catalogGeneration = React.useRef(0);
+  const [catalogRevision, setCatalogRevision] = React.useState(0);
   const [tab, setTab] = React.useState("mcp");
   const [mcpPath, setMcpPath] = React.useState("");
   const [loadedPath, setLoadedPath] = React.useState(null);
@@ -91,6 +108,73 @@ function ManagerPage() {
   const [skillDescription, setSkillDescription] = React.useState("");
   const [skillWhenToUse, setSkillWhenToUse] = React.useState("");
   const [skillContent, setSkillContent] = React.useState("");
+
+  function callHost(method, args = {}) {
+    return requestHost(method, { ...args, sessionId });
+  }
+
+  function checkContext(result) {
+    if (result?.context?.sessionId !== sessionId) throw new Error("返回的会话上下文不匹配，请确认 Host 与 Client 使用同一插件版本。");
+  }
+
+  async function refreshContexts() {
+    const requestId = ++contextsRequest.current;
+    setContextsBusy(true);
+    setContextsError("");
+    try {
+      const result = await requestHost("contexts.list", {});
+      if (requestId !== contextsRequest.current) return;
+      if (!isRecord(result) || !Array.isArray(result.contexts)) throw new Error("会话目录返回格式无效。");
+      setContexts(result.contexts);
+    } catch (error) {
+      if (requestId === contextsRequest.current) setContextsError(errorText(error));
+    } finally {
+      if (requestId === contextsRequest.current) setContextsBusy(false);
+    }
+  }
+
+  function selectContext(next) {
+    if (writeCount || next === sessionId) return;
+    ++mcpRequest.current;
+    ++runtimeRequest.current;
+    ++skillRequest.current;
+    ++bodyRequest.current;
+    setSessionId(next);
+    setMcpEntries([]);
+    setMcpPath("");
+    setLoadedPath(null);
+    setEntryId("");
+    setRuntimeCatalog(null);
+    setSkills([]);
+    setSelectedSkill(null);
+    setServerFormOpen(false);
+    setRemoveServerName("");
+    setSkillFormOpen(false);
+    setUnregisterName("");
+    setMcpError("");
+    setSkillsError("");
+    setRuntimeError("");
+    setMcpNotice("");
+    setSkillsNotice("");
+  }
+
+  async function refreshRuntime() {
+    const requestId = ++runtimeRequest.current;
+    setRuntimeBusy(true);
+    setRuntimeCatalog(null);
+    setRuntimeError("");
+    try {
+      const result = await callHost("mcp.discover");
+      if (requestId !== runtimeRequest.current) return;
+      if (!isRecord(result) || !Array.isArray(result.tools) || !Array.isArray(result.candidates) || !Array.isArray(result.configured)) throw new Error("会话能力目录返回格式无效。");
+      checkContext(result);
+      setRuntimeCatalog(result);
+    } catch (error) {
+      if (requestId === runtimeRequest.current) setRuntimeError(errorText(error));
+    } finally {
+      if (requestId === runtimeRequest.current) setRuntimeBusy(false);
+    }
+  }
 
   async function refreshMcp(pathOverride) {
     const requestedPath = typeof pathOverride === "string" ? pathOverride : mcpPath;
@@ -121,42 +205,77 @@ function ManagerPage() {
   }
 
   async function refreshSkills() {
+    const requestId = ++skillRequest.current;
+    const generation = ++catalogGeneration.current;
+    ++bodyRequest.current;
+    setSelectedSkill(null);
+    setCatalogRevision(generation);
     setSkillsBusy(true);
     setSkillsError("");
     try {
       const result = await callHost("skills.list", {});
+      if (requestId !== skillRequest.current) return;
       if (!isRecord(result) || !Array.isArray(result.skills)) throw new Error("Skill 目录返回格式无效。");
+      checkContext(result);
+      if (catalogGeneration.current === generation) ++catalogGeneration.current;
+      ++bodyRequest.current;
+      setSelectedSkill(null);
+      setCatalogRevision(catalogGeneration.current);
       setSkills(result.skills);
       setSkillsComplete(result.complete !== false);
     } catch (error) {
-      setSkillsError(errorText(error));
+      if (requestId === skillRequest.current) {
+        ++catalogGeneration.current;
+        setCatalogRevision(catalogGeneration.current);
+        setSkillsError(errorText(error));
+      }
     } finally {
-      setSkillsBusy(false);
+      if (requestId === skillRequest.current) setSkillsBusy(false);
     }
   }
 
   async function loadSkill(name) {
+    if (skillsBusy || !skills.some((skill) => skill.name === name)) {
+      setSkillsError("Skill 目录正在刷新或已变化，请等待刷新完成后再读取正文。");
+      return;
+    }
+    const requestId = ++bodyRequest.current;
+    const generation = catalogGeneration.current;
+    const revision = catalogRevision;
+    setSelectedSkill(null);
     setSkillsError("");
     try {
       const result = await callHost("skills.get", { name });
+      if (requestId !== bodyRequest.current || generation !== catalogGeneration.current || revision !== catalogRevision) return;
+      checkContext(result);
+      if (!skills.some((skill) => skill.name === name)) return;
       setSelectedSkill(result && result.skill || null);
     } catch (error) {
-      setSkillsError(errorText(error));
+      if (requestId === bodyRequest.current && generation === catalogGeneration.current) setSkillsError(errorText(error));
     }
   }
 
+  React.useEffect(() => { void refreshContexts(); }, []);
   React.useEffect(() => {
     void refreshMcp("");
+    void refreshRuntime();
     void refreshSkills();
-  }, []);
+    return () => {
+      ++mcpRequest.current;
+      ++runtimeRequest.current;
+      ++skillRequest.current;
+      ++bodyRequest.current;
+    };
+  }, [sessionId]);
 
   const selectedEntry = mcpEntries.find((row) => row.entry && row.entry.id === entryId) || mcpEntries[0] || null;
   const serverRows = selectedEntry && isRecord(selectedEntry.servers) ? Object.entries(selectedEntry.servers) : [];
   const pathDirty = loadedPath === null || mcpPath.trim() !== loadedPath;
+  const mapLocked = pathDirty || !!sessionId;
 
   async function saveServer(event) {
     event.preventDefault();
-    if (mcpBusy || pathDirty || !loadedPath) {
+    if (mcpBusy || mapLocked || !loadedPath) {
       setMcpError("映射路径尚未成功读取，请先读取当前路径。");
       return;
     }
@@ -177,6 +296,7 @@ function ManagerPage() {
       setMcpError("请先选择配置条目并填写 server 名称。");
       return;
     }
+    setWriteCount((count) => count + 1);
     setMcpBusy(true);
     try {
       const args = { entryId: selectedEntry.entry.id, name: serverName.trim(), definition };
@@ -191,17 +311,19 @@ function ManagerPage() {
       setMcpError(errorText(error));
     } finally {
       setMcpBusy(false);
+      setWriteCount((count) => count - 1);
     }
   }
 
   async function removeServer(name) {
     if (!selectedEntry || !selectedEntry.entry) return;
-    if (mcpBusy || pathDirty || !loadedPath) {
+    if (mcpBusy || mapLocked || !loadedPath) {
       setMcpError("映射路径尚未成功读取，请先读取当前路径。");
       return;
     }
     setMcpError("");
     setMcpNotice("");
+    setWriteCount((count) => count + 1);
     setMcpBusy(true);
     try {
       const args = { entryId: selectedEntry.entry.id, name };
@@ -216,6 +338,7 @@ function ManagerPage() {
       setMcpError(errorText(error));
     } finally {
       setMcpBusy(false);
+      setWriteCount((count) => count - 1);
     }
   }
 
@@ -223,6 +346,7 @@ function ManagerPage() {
     event.preventDefault();
     setSkillsError("");
     setSkillsNotice("");
+    setWriteCount((count) => count + 1);
     setSkillsBusy(true);
     try {
       const args = {
@@ -243,12 +367,14 @@ function ManagerPage() {
       setSkillsError(errorText(error));
     } finally {
       setSkillsBusy(false);
+      setWriteCount((count) => count - 1);
     }
   }
 
   async function unregisterSkill(name) {
     setSkillsError("");
     setSkillsNotice("");
+    setWriteCount((count) => count + 1);
     setSkillsBusy(true);
     try {
       await callHost("skills.unregister", { name });
@@ -260,10 +386,48 @@ function ManagerPage() {
       setSkillsError(errorText(error));
     } finally {
       setSkillsBusy(false);
+      setWriteCount((count) => count - 1);
     }
   }
 
   function renderMcp() {
+    const filter = toolFilter.trim().toLowerCase();
+    const matches = (tool) => !filter || tool.name.toLowerCase().includes(filter);
+    const candidates = (runtimeCatalog?.candidates || []).filter(matches);
+    const visibleTools = (runtimeCatalog?.tools || []).filter(matches);
+    const origin = (tool) => tool.definitionView === "profile" ? "Profile 有效定义"
+      : tool.definitionView === "same-as-profile" ? "与 Profile 相同定义"
+      : tool.definitionView === "session-specific" ? "当前会话有效定义" : "定义来源未知";
+    return h("section", { className: "dsh-msm-panel" },
+      h("div", { className: "dsh-msm-row" },
+        h(Field, { label: "搜索可见工具", hint: "按完整工具名检索，例如 mc、holo 或 okr。" },
+          h("input", { className: "dsh-msm-input", "aria-label": "搜索可见工具", value: toolFilter, onChange: (event) => setToolFilter(event.currentTarget.value) })),
+        h("button", { className: "dsh-msm-button", type: "button", disabled: runtimeBusy, onClick: () => void refreshRuntime() }, runtimeBusy ? "发现中…" : "刷新 MCP 发现")),
+      h("div", { className: "dsh-msm-muted" }, "目录按所选会话的实际工具作用域读取。MCP 命名候选保留完整工具名；命名约定不能证明来源，工具可见也不代表连接在线。当前运行时未提供权威连接状态，页面显示为未知。"),
+      runtimeError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, runtimeError) : null,
+      runtimeBusy ? h("div", { className: "dsh-msm-muted" }, "正在读取所选会话的能力…") : null,
+      runtimeCatalog ? h(React.Fragment, null,
+        (runtimeCatalog.warnings || []).map((warning) => h("div", { className: "dsh-msm-notice", role: "status", key: warning }, warning)),
+        h("h3", { className: "dsh-msm-card-title" }, `MCP 命名候选（${candidates.length}）`),
+        candidates.length ? h("div", { className: "dsh-msm-list" }, candidates.map((tool) => h("article", { className: "dsh-msm-card", key: tool.name },
+          h("h3", { className: "dsh-msm-card-title" }, tool.name),
+          h("div", { className: "dsh-msm-muted" }, `${origin(tool)} · 来源待核实 · 连接状态：未知`))))
+          : h("div", { className: "dsh-msm-muted" }, runtimeCatalog.toolsAvailable ? "此视图没有匹配的 MCP 命名候选。原生配置来源与其他有效工具见下方。" : "工具目录不可用，不能据此判断 MCP 数量。"),
+        h("h3", { className: "dsh-msm-card-title" }, `原生 MCP 配置来源（${runtimeCatalog.configured.length}）`),
+        runtimeCatalog.configured.map((row, index) => h("article", { className: "dsh-msm-card", key: `${row.kind}:${row.entryId}:${index}` },
+          h("h3", { className: "dsh-msm-card-title" }, row.serverName || row.entryId || "MCP 配置条目"),
+          h("div", { className: "dsh-msm-muted" }, row.kind === "preset-config" ? `来源：预设 ${row.preset}` : "来源：Profile 配置（不代表所选会话可调用）"),
+          h("div", { className: "dsh-msm-muted" }, `插件状态：${["等待", "加载中", "已激活", "失败", "已卸载", "卸载中"][row.fiberState] || "未知"} · 连接状态：未知`))),
+        h("details", { open: !!filter },
+          h("summary", null, `该视图全部可见工具（${visibleTools.length}）`),
+          h("div", { className: "dsh-msm-list" }, visibleTools.map((tool) => h("div", { className: "dsh-msm-card", key: tool.name }, `${tool.name} · ${origin(tool)}`))))) : null,
+      h("details", null,
+        h("summary", null, "高级：Profile 配置映射编辑"),
+        sessionId ? h("div", { className: "dsh-msm-notice" }, "当前会话视图只读；编辑 Profile 配置映射需选择 Profile 全局视图。") : null,
+        renderMcpMap()));
+  }
+
+  function renderMcpMap() {
     return h("section", { className: "dsh-msm-panel" },
       h("div", { className: "dsh-msm-row" },
         h(Field, { label: "MCP 映射路径", hint: "填写已存在的自定义 server 映射路径；DSH 原生 MCP 插件条目请在插件管理器查看。" },
@@ -308,7 +472,7 @@ function ManagerPage() {
               h("button", {
                 className: "dsh-msm-button",
                 type: "button",
-                disabled: mcpBusy || pathDirty,
+                disabled: mcpBusy || mapLocked,
                 onClick: () => {
                   setServerName(name);
                   setDefinitionText("");
@@ -318,9 +482,9 @@ function ManagerPage() {
               }, "编辑 override"),
               removeServerName === name
                 ? h(React.Fragment, null,
-                  h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || pathDirty, onClick: () => void removeServer(name) }, "确认移除"),
+                  h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || mapLocked, onClick: () => void removeServer(name) }, "确认移除"),
                   h("button", { className: "dsh-msm-button", type: "button", onClick: () => setRemoveServerName("") }, "取消"))
-                : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || pathDirty, onClick: () => setRemoveServerName(name) }, "移除"))),
+                : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || mapLocked, onClick: () => setRemoveServerName(name) }, "移除"))),
           h("pre", { className: "dsh-msm-pre" }, JSON.stringify(summary, null, 2)))))
         : h("div", { className: "dsh-msm-empty" }, mcpBusy
           ? "正在读取配置目录…"
@@ -331,7 +495,7 @@ function ManagerPage() {
         h("button", {
           className: "dsh-msm-button",
           type: "button",
-          disabled: !selectedEntry || !loadedPath || pathDirty || mcpBusy,
+          disabled: !selectedEntry || !loadedPath || mapLocked || mcpBusy,
           onClick: () => {
             setServerName("");
             setDefinitionText("");
@@ -345,7 +509,7 @@ function ManagerPage() {
         h(Field, { label: "JSON 定义", hint: "提交完整 server 对象；该 server 的省略字段不会自动保留。" },
           h("textarea", { className: "dsh-msm-textarea", value: definitionText, onChange: (event) => setDefinitionText(event.currentTarget.value), required: true, spellCheck: false, placeholder: '{\n  "command": "...",\n  "args": []\n}' })),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: mcpBusy || pathDirty }, mcpBusy ? "保存中…" : "保存 server")))
+          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: mcpBusy || mapLocked }, mcpBusy ? "保存中…" : "保存 server")))
         : null);
   }
 
@@ -353,8 +517,11 @@ function ManagerPage() {
     return h("section", { className: "dsh-msm-panel" },
       h("div", { className: "dsh-msm-actions" },
         h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void refreshSkills() }, skillsBusy ? "读取中…" : "刷新 Skills"),
-        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy, onClick: () => setSkillFormOpen((open) => !open) }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
-      h("div", { className: "dsh-msm-muted" }, "此页显示 Profile 全局 Skill 目录，不含 Agent 专属层。Agent 调用管理工具时使用其自身作用域和工作目录。Runtime Skill 仅在此插件生命周期内有效，持久化文件不由此页修改。"),
+        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy || !!sessionId, onClick: () => setSkillFormOpen((open) => !open) }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
+      h("div", { className: "dsh-msm-muted" }, sessionId
+        ? "此目录与所选会话使用相同的 Agent、工作目录及预设 Skill 服务。Runtime Skill 注册与注销在 Profile 全局视图中管理。"
+        : "此页为 Profile 全局 Skill 目录；选择会话可读取其 Agent 与项目目录的有效 Skill。Runtime Skill 仅在插件生命周期内有效。"),
+      !skillsBusy && !skillsError ? h("div", { className: "dsh-msm-muted", "data-catalog-revision": String(catalogRevision) }, "当前目录与已读取正文属于同一次读取结果。") : null,
       !skillsBusy && !skillsComplete && !skillsError ? h("div", { className: "dsh-msm-notice", role: "status" }, "Skill 发现尚未完成，当前结果不能作为完整目录。") : null,
       skillsError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, skillsError) : null,
       skillsNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, skillsNotice) : null,
@@ -375,9 +542,10 @@ function ManagerPage() {
           h("div", { className: "dsh-msm-card-header" },
             h("div", null,
               h("h3", { className: "dsh-msm-card-title" }, skill.name),
-              h("div", { className: "dsh-msm-muted" }, `${skill.source || "Skill"}${skill.description ? ` · ${skill.description}` : ""}`)),
+              h("div", { className: "dsh-msm-muted" }, `${skill.source || "Skill"}${skill.provider ? ` · ${skill.provider}` : ""}${skill.description ? ` · ${skill.description}` : ""}`),
+              skill.path ? h("div", { className: "dsh-msm-muted" }, skill.path) : null),
             h("div", { className: "dsh-msm-actions" },
-              h("button", { className: "dsh-msm-button", type: "button", onClick: () => void loadSkill(skill.name) }, "查看正文"),
+              h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void loadSkill(skill.name) }, "查看正文"),
               skill.canUnregister
                 ? unregisterName === skill.name
                   ? h(React.Fragment, null,
@@ -388,7 +556,7 @@ function ManagerPage() {
         : h("div", { className: "dsh-msm-empty" }, skillsBusy ? "正在读取 Skill 目录…"
           : skillsError ? "Skill 目录读取失败；不能据此判断 Skill 数量。"
           : !skillsComplete ? "Skill 发现尚未完成。"
-          : "当前 Profile 全局目录没有可见 Skill。"),
+          : sessionId ? "所选会话的有效目录没有可见 Skill。" : "当前 Profile 全局目录没有可见 Skill。"),
       selectedSkill ? h("article", { className: "dsh-msm-card" },
         h("div", { className: "dsh-msm-card-header" },
           h("h3", { className: "dsh-msm-card-title" }, `Skill 正文：${selectedSkill.name}`),
@@ -400,7 +568,16 @@ function ManagerPage() {
     h("header", { className: "dsh-msm-header" },
       h("div", null,
         h("h1", { className: "dsh-msm-title" }, "MCP 与 Skill 管理"),
-        h("p", { className: "dsh-msm-subtitle" }, "管理当前 Profile 的 MCP 配置条目和运行期 Skill。"))),
+        h("p", { className: "dsh-msm-subtitle" }, "按所选会话发现 MCP 相关能力与有效 Skill，并显示来源。"))),
+    h("div", { className: "dsh-msm-row" },
+      h(Field, { label: "能力视图", hint: "未加载会话需先在 DSH 中打开，再刷新目录；读取目录不会后台创建 Agent。" },
+        h("select", { className: "dsh-msm-select", "aria-label": "能力视图", value: sessionId, disabled: writeCount > 0, onChange: (event) => selectContext(event.currentTarget.value) },
+          h("option", { value: "" }, "Profile 全局视图"),
+          sessionId && !contexts.some((context) => context.sessionId === sessionId) ? h("option", { value: sessionId }, `${sessionRows[sessionId]?.title || sessionId} · 状态待刷新`) : null,
+          contexts.map((context) => h("option", { key: context.sessionId, value: context.sessionId }, `${sessionRows[context.sessionId]?.title || context.sessionId} · ${context.live ? "已加载" : "未加载"}${context.cwd ? ` · ${context.cwd}` : ""}${context.preset ? ` · ${context.preset}` : ""}`)))),
+      h("button", { className: "dsh-msm-button", type: "button", disabled: contextsBusy, onClick: () => void refreshContexts() }, contextsBusy ? "读取会话中…" : "刷新会话")),
+    contextsError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, contextsError) : null,
+    writeCount ? h("div", { className: "dsh-msm-notice", role: "status" }, "正在提交操作，完成后可切换能力视图。") : null,
     h("nav", { className: "dsh-msm-tabs", role: "tablist", "aria-label": "管理类型" },
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "mcp", onClick: () => setTab("mcp") }, "MCP Servers"),
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "skills", onClick: () => setTab("skills") }, "Skills")),

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
+import { createDiscovery, DiscoveryError } from './discovery.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -155,7 +156,7 @@ function tool(name, description, parameters, execute) {
       try {
         return await execute(args, exec);
       } catch (error) {
-        if (error instanceof ManagerError) throw error;
+        if (error instanceof ManagerError || error instanceof DiscoveryError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -180,14 +181,15 @@ function skillLookup(exec) {
 }
 
 export function apply(ctx, config = {}) {
+  const discovery = createDiscovery(ctx);
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
   const runtimeProvider = `${name}:${randomUUID()}`;
   const mcpTool = tool(
     'dsh_manage_mcp_servers',
-    'List, add or update, and remove MCP server records in a DSH configuration entry. Listing redacts configured values. Supply configPath explicitly or configure mcpConfigPath on this plugin.',
+    'Discover MCP-named tools and native configuration sources in the calling Agent scope, or edit an explicit configuration map. Discovery reports connectivity as unknown.',
     {
-      action: { type: 'string', required: true, enum: ['list', 'upsert', 'remove'] },
+      action: { type: 'string', required: true, enum: ['discover', 'list', 'upsert', 'remove'] },
       entryId: { type: 'string', description: 'Entry id, patch id, or name returned by the list action.' },
       configPath: { type: 'string', description: 'Dot path to the MCP server map, for example the path configured for this plugin.' },
       name: { type: 'string', description: 'MCP server key for upsert or remove.' },
@@ -199,6 +201,9 @@ export function apply(ctx, config = {}) {
       const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
         ? args.configPath
         : config.mcpConfigPath;
+      if (action === 'discover' || (action === 'list' && !configuredPath?.trim())) {
+        return { action, ...await discovery.mcp(discovery.view({}, exec.agent), exec.signal) };
+      }
       const rows = ctx.configEditor.configuration();
       if (action === 'list') {
         const parts = pathParts(configuredPath);
@@ -285,12 +290,12 @@ export function apply(ctx, config = {}) {
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
       if (action === 'list') {
-        const snapshot = await ctx.skills.snapshot(skillLookup(exec));
+        const snapshot = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
         return { action, skills: snapshot.skills, complete: snapshot.complete, scope: exec.agent ? 'agent' : 'profile' };
       }
       const skillName = requireString(args.name, 'name');
       if (action === 'get') {
-        const skill = await ctx.skills.get(skillName, skillLookup(exec));
+        const skill = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
         return { action, skill: skill ?? null };
       }
       if (action === 'register') {
@@ -305,7 +310,7 @@ export function apply(ctx, config = {}) {
         pendingSkills.add(skillName);
         let dispose;
         try {
-          const existing = await ctx.skills.snapshot(skillLookup(exec));
+          const existing = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
           exec.signal.throwIfAborted();
           if (!existing.complete) throw new ManagerError('Skill discovery is incomplete; retry before registering a runtime skill');
           if (existing.skills.some((skill) => skill.name === skillName)) {
@@ -320,9 +325,9 @@ export function apply(ctx, config = {}) {
             ...(typeof args.whenToUse === 'string' && args.whenToUse.trim() ? { whenToUse: args.whenToUse.trim() } : {}),
             invocation: { modelInvocable: true, userInvocable: true },
           });
-          const observed = await ctx.skills.snapshot(skillLookup(exec));
+          const observed = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
           if (!observed.complete) throw new ManagerError('Skill discovery is incomplete; runtime registration was rolled back');
-          const registered = await ctx.skills.get(skillName, skillLookup(exec));
+          const registered = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
           exec.signal.throwIfAborted();
           if (
             !registered
@@ -356,51 +361,66 @@ export function apply(ctx, config = {}) {
   const disposeSkillTool = ctx.tools.register(skillsTool);
   const handleRpc = async (method, payload, signal) => {
     try {
-      if (payload !== undefined && !isRecord(payload)) {
-        throw new ManagerError('RPC arguments must be an object');
-      }
+      if (payload !== undefined && !isRecord(payload)) throw new ManagerError('RPC arguments must be an object');
       const args = isRecord(payload) ? payload : {};
+      if (args.sessionId !== undefined && typeof args.sessionId !== 'string') throw new ManagerError('sessionId must be a string');
       signal.throwIfAborted();
+      const mutation = ['mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method);
+      if (mutation && args.sessionId?.trim()) throw new ManagerError('This operation changes the Profile global configuration or Runtime Skills; select the Profile global view first.');
+      const target = method.startsWith('skills.') ? discovery.view(args) : undefined;
+      const exec = { signal, agent: target?.agent };
       let value;
       switch (method) {
+        case 'contexts.list':
+          value = await discovery.contexts(signal);
+          break;
+        case 'mcp.discover':
+          value = await discovery.mcp(discovery.view(args), signal);
+          break;
         case 'mcp.catalog':
           value = readMcpCatalog(ctx, config, args);
           break;
         case 'mcp.upsert':
-          value = await mcpTool.execute({ ...args, action: 'upsert' }, { signal });
+          value = await mcpTool.execute({ ...args, action: 'upsert' }, exec);
           break;
         case 'mcp.remove':
-          value = await mcpTool.execute({ ...args, action: 'remove' }, { signal });
+          value = await mcpTool.execute({ ...args, action: 'remove' }, exec);
           break;
         case 'skills.list': {
-          const result = await skillsTool.execute({ action: 'list' }, { signal });
+          const result = await skillsTool.execute({ action: 'list' }, exec);
+          discovery.assertCurrent(target, signal);
           value = {
             complete: result.complete,
             scope: result.scope,
+            context: target.context,
             skills: result.skills.map((skill) => ({
               name: skill.name,
               description: skill.description,
               source: skill.source,
-              canUnregister: runtimeSkills.has(skill.name),
+              provider: skill.provider,
+              path: typeof skill.path === 'string' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(skill.path) ? skill.path : undefined,
+              canUnregister: !target.agent && runtimeSkills.has(skill.name),
             })),
           };
           break;
         }
         case 'skills.get':
-          value = await skillsTool.execute({ ...args, action: 'get' }, { signal });
+          value = await skillsTool.execute({ ...args, action: 'get' }, exec);
+          discovery.assertCurrent(target, signal);
+          value = { ...value, context: target.context };
           break;
         case 'skills.register':
-          value = await skillsTool.execute({ ...args, action: 'register' }, { signal });
+          value = await skillsTool.execute({ ...args, action: 'register' }, exec);
           break;
         case 'skills.unregister':
-          value = await skillsTool.execute({ ...args, action: 'unregister' }, { signal });
+          value = await skillsTool.execute({ ...args, action: 'unregister' }, exec);
           break;
         default:
           throw new ManagerError('Unknown mcp-skill-manager RPC method');
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof ManagerError;
+      const knownError = error instanceof ManagerError || error instanceof DiscoveryError;
       return {
         ok: false,
         error: {
@@ -411,7 +431,7 @@ export function apply(ctx, config = {}) {
       };
     }
   };
-  const rpcMethods = ['mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
+  const rpcMethods = ['contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
   ctx.inject(['connection'], (webCtx) => {
     webCtx.effect(function* () {
     for (const method of rpcMethods) {

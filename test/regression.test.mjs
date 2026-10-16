@@ -20,7 +20,7 @@ const progress = resolve(root, 'test-progress.log');
 writeFileSync(progress, 'isolated test module loaded\n');
 const mark = (message) => appendFileSync(progress, message + '\n');
 const hashes = {};
-for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js']]) {
+for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['package.json', 'package.json']]) {
   const copy = readFileSync(resolve(root, fixture));
   assert.deepEqual(copy, readFileSync(resolve(repo, source)), 'Tested fixture must match the actual plugin source');
   hashes[source] = createHash('sha256').update(copy).digest('hex');
@@ -170,12 +170,13 @@ async function fixture(options = {}) {
   await tick();
   const exec = (extra = {}) => ({ signal: new AbortController().signal, ...extra });
   const call = (name, args, extra) => tools.get(name).execute(args, exec(extra));
-  const rpc = async (method, payload = {}) => {
+  const rpc = async (method, payload = {}, signal) => {
     const endpoint = 'mcp-skill-manager.' + method;
     const route = routes.get('/api/' + endpoint);
     assert.ok(route, 'Requested isolated route must be registered');
     const request = new Request('https://fixture.invalid/api/' + endpoint, {
       method: 'POST',
+      signal,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId: 'fixture-request', method: endpoint, payload }),
     });
@@ -273,12 +274,12 @@ await check('Optional Web arrival and removal do not stop Host tools or leak rou
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 9);
+  assert.equal(host.routes.size, 10);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 2);
   await host.attachWeb();
-  assert.equal(host.routes.size, 9);
+  assert.equal(host.routes.size, 10);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {

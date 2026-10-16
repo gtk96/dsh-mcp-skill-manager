@@ -73,6 +73,13 @@ function ManagerPage(props) {
   const [contextsBusy, setContextsBusy] = React.useState(true);
   const [contextsError, setContextsError] = React.useState("");
   const [writeCount, setWriteCount] = React.useState(0);
+  const compatibilityRequest = React.useRef(0);
+  const [compatibility, setCompatibility] = React.useState(null);
+  const [compatibilityBusy, setCompatibilityBusy] = React.useState(true);
+  const [compatibilityError, setCompatibilityError] = React.useState("");
+  const testedVersion = compatibility?.versionStatus === "tested" && compatibility.testedRuntimeVersions.includes(compatibility.runtimeVersion);
+  const canEditMcp = testedVersion && compatibility?.capabilities?.configEdit === true && compatibility?.writes?.mcp === true;
+  const canEditSkills = testedVersion && compatibility?.capabilities?.runtimeSkills === true && compatibility?.writes?.skills === true;
   const [runtimeCatalog, setRuntimeCatalog] = React.useState(null);
   const [runtimeBusy, setRuntimeBusy] = React.useState(true);
   const [runtimeError, setRuntimeError] = React.useState("");
@@ -117,6 +124,35 @@ function ManagerPage(props) {
     if (result?.context?.sessionId !== sessionId) throw new Error("返回的会话上下文不匹配，请确认 Host 与 Client 使用同一插件版本。");
   }
 
+  async function refreshCompatibility() {
+    const requestId = ++compatibilityRequest.current;
+    setCompatibility(null);
+    setCompatibilityBusy(true);
+    setCompatibilityError("");
+    setServerFormOpen(false);
+    setRemoveServerName("");
+    setSkillFormOpen(false);
+    setUnregisterName("");
+    try {
+      const result = await callHost("compatibility.status");
+      if (requestId !== compatibilityRequest.current) return;
+      if (!isRecord(result) || result.protocolVersion !== 1 || typeof result.pluginVersion !== "string"
+        || !(result.runtimeVersion === null || typeof result.runtimeVersion === "string")
+        || !["tested", "unverified", "unknown"].includes(result.versionStatus)
+        || !Array.isArray(result.testedRuntimeVersions) || !result.testedRuntimeVersions.every((version) => typeof version === "string")
+        || !isRecord(result.capabilities) || !Object.values(result.capabilities).every((value) => typeof value === "boolean")
+        || !isRecord(result.writes) || typeof result.writes.mcp !== "boolean" || typeof result.writes.skills !== "boolean") {
+        throw new Error("兼容检查协议不匹配，请确认 Host 与 Client 插件版本一致；写入已禁用。");
+      }
+      checkContext(result);
+      setCompatibility(result);
+    } catch (error) {
+      if (requestId === compatibilityRequest.current) setCompatibilityError(errorText(error));
+    } finally {
+      if (requestId === compatibilityRequest.current) setCompatibilityBusy(false);
+    }
+  }
+
   async function refreshContexts() {
     const requestId = ++contextsRequest.current;
     setContextsBusy(true);
@@ -135,6 +171,8 @@ function ManagerPage(props) {
 
   function selectContext(next) {
     if (writeCount || next === sessionId) return;
+    ++compatibilityRequest.current;
+    setCompatibility(null);
     ++mcpRequest.current;
     ++runtimeRequest.current;
     ++skillRequest.current;
@@ -257,10 +295,12 @@ function ManagerPage(props) {
 
   React.useEffect(() => { void refreshContexts(); }, []);
   React.useEffect(() => {
+    void refreshCompatibility();
     void refreshMcp("");
     void refreshRuntime();
     void refreshSkills();
     return () => {
+      ++compatibilityRequest.current;
       ++mcpRequest.current;
       ++runtimeRequest.current;
       ++skillRequest.current;
@@ -271,7 +311,7 @@ function ManagerPage(props) {
   const selectedEntry = mcpEntries.find((row) => row.entry && row.entry.id === entryId) || mcpEntries[0] || null;
   const serverRows = selectedEntry && isRecord(selectedEntry.servers) ? Object.entries(selectedEntry.servers) : [];
   const pathDirty = loadedPath === null || mcpPath.trim() !== loadedPath;
-  const mapLocked = pathDirty || !!sessionId;
+  const mapLocked = pathDirty || !!sessionId || !canEditMcp;
 
   async function saveServer(event) {
     event.preventDefault();
@@ -344,6 +384,10 @@ function ManagerPage(props) {
 
   async function registerSkill(event) {
     event.preventDefault();
+    if (!canEditSkills || sessionId || skillsBusy) {
+      setSkillsError("当前兼容检查不允许写入，或尚未进入可编辑的 Profile 全局视图。");
+      return;
+    }
     setSkillsError("");
     setSkillsNotice("");
     setWriteCount((count) => count + 1);
@@ -372,6 +416,10 @@ function ManagerPage(props) {
   }
 
   async function unregisterSkill(name) {
+    if (!canEditSkills || sessionId || skillsBusy) {
+      setSkillsError("当前兼容检查不允许写入，或尚未进入可编辑的 Profile 全局视图。");
+      return;
+    }
     setSkillsError("");
     setSkillsNotice("");
     setWriteCount((count) => count + 1);
@@ -517,7 +565,7 @@ function ManagerPage(props) {
     return h("section", { className: "dsh-msm-panel" },
       h("div", { className: "dsh-msm-actions" },
         h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void refreshSkills() }, skillsBusy ? "读取中…" : "刷新 Skills"),
-        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy || !!sessionId, onClick: () => setSkillFormOpen((open) => !open) }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
+        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy || !!sessionId || !canEditSkills, onClick: () => setSkillFormOpen((open) => !open) }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
       h("div", { className: "dsh-msm-muted" }, sessionId
         ? "此目录与所选会话使用相同的 Agent、工作目录及预设 Skill 服务。Runtime Skill 注册与注销在 Profile 全局视图中管理。"
         : "此页为 Profile 全局 Skill 目录；选择会话可读取其 Agent 与项目目录的有效 Skill。Runtime Skill 仅在插件生命周期内有效。"),
@@ -535,7 +583,7 @@ function ManagerPage(props) {
         h(Field, { label: "Skill 正文" },
           h("textarea", { className: "dsh-msm-textarea", value: skillContent, onChange: (event) => setSkillContent(event.currentTarget.value), required: true, spellCheck: false })),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: skillsBusy }, skillsBusy ? "注册中…" : "注册 Skill")))
+          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: skillsBusy || !canEditSkills }, skillsBusy ? "注册中…" : "注册 Skill")))
         : null,
       skills.length
         ? h("div", { className: "dsh-msm-list" }, skills.map((skill) => h("article", { className: "dsh-msm-card", key: skill.name },
@@ -549,9 +597,9 @@ function ManagerPage(props) {
               skill.canUnregister
                 ? unregisterName === skill.name
                   ? h(React.Fragment, null,
-                    h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy, onClick: () => void unregisterSkill(skill.name) }, "确认注销"),
+                    h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy || !canEditSkills, onClick: () => void unregisterSkill(skill.name) }, "确认注销"),
                     h("button", { className: "dsh-msm-button", type: "button", onClick: () => setUnregisterName("") }, "取消"))
-                  : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy, onClick: () => setUnregisterName(skill.name) }, "注销")
+                  : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy || !canEditSkills, onClick: () => setUnregisterName(skill.name) }, "注销")
                 : null)))))
         : h("div", { className: "dsh-msm-empty" }, skillsBusy ? "正在读取 Skill 目录…"
           : skillsError ? "Skill 目录读取失败；不能据此判断 Skill 数量。"
@@ -569,6 +617,22 @@ function ManagerPage(props) {
       h("div", null,
         h("h1", { className: "dsh-msm-title" }, "MCP 与 Skill 管理"),
         h("p", { className: "dsh-msm-subtitle" }, "按所选会话发现 MCP 相关能力与有效 Skill，并显示来源。"))),
+    h("section", { className: "dsh-msm-card", "aria-label": "兼容检查" },
+      h("div", { className: "dsh-msm-card-header" },
+        h("h2", { className: "dsh-msm-card-title" }, "兼容检查"),
+        h("button", { className: "dsh-msm-button", type: "button", disabled: compatibilityBusy || writeCount > 0, onClick: () => void refreshCompatibility() }, compatibilityBusy ? "检查中…" : "重新检查兼容性")),
+      compatibilityError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, `${compatibilityError} 当前写入已禁用，仍可尝试读取目录。`) : null,
+      compatibility ? h(React.Fragment, null,
+        h("div", null, `DSH：${compatibility.runtimeVersion || "无法识别"} · 插件：${compatibility.pluginVersion}`),
+        h("div", { className: "dsh-msm-muted" }, `已做隔离回归的 DSH 版本：${compatibility.testedRuntimeVersions.join("、") || "无"}。安装范围不等于已验证版本。`),
+        h("div", { role: "status", className: "dsh-msm-notice" }, compatibility.versionStatus === "tested"
+          ? `版本匹配隔离回归基线；配置写入${canEditMcp ? "已启用" : "已禁用"}，Runtime Skill 写入${canEditSkills ? "已启用" : "已禁用"}。接口检查仅确认方法存在，不代表外部 MCP 已连接。`
+          : "运行版本未验证或无法识别，配置及 Runtime Skill 操作保持只读。"),
+        h("details", null,
+          h("summary", null, "接口能力"),
+          Object.entries({ mcpCatalog: "MCP 配置目录", mcpDiscovery: "会话工具目录", skillCatalog: "Skill 目录与正文", configEdit: "配置编辑", runtimeSkills: "Runtime Skill 注册", sessionSelection: "会话选择", presetScope: "预设作用域" })
+            .map(([key, label]) => h("div", { className: "dsh-msm-muted", key }, `${label}：${compatibility.capabilities[key] === true ? "接口可用" : "接口缺失"}`))))
+        : compatibilityBusy ? h("div", { className: "dsh-msm-muted" }, "正在检查版本和接口，写入暂不可用。") : null),
     h("div", { className: "dsh-msm-row" },
       h(Field, { label: "能力视图", hint: "未加载会话需先在 DSH 中打开，再刷新目录；读取目录不会后台创建 Agent。" },
         h("select", { className: "dsh-msm-select", "aria-label": "能力视图", value: sessionId, disabled: writeCount > 0, onChange: (event) => selectContext(event.currentTarget.value) },

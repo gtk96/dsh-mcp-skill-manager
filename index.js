@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
+import { createCompatibility, CompatibilityError } from './compatibility.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -156,7 +157,7 @@ function tool(name, description, parameters, execute) {
       try {
         return await execute(args, exec);
       } catch (error) {
-        if (error instanceof ManagerError || error instanceof DiscoveryError) throw error;
+        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -182,6 +183,7 @@ function skillLookup(exec) {
 
 export function apply(ctx, config = {}) {
   const discovery = createDiscovery(ctx);
+  const compatibility = createCompatibility(ctx, discovery.serviceFor);
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
   const runtimeProvider = `${name}:${randomUUID()}`;
@@ -204,6 +206,7 @@ export function apply(ctx, config = {}) {
       if (action === 'discover' || (action === 'list' && !configuredPath?.trim())) {
         return { action, ...await discovery.mcp(discovery.view({}, exec.agent), exec.signal) };
       }
+      if (action === 'upsert' || action === 'remove') await compatibility.assertWrite('mcp', exec.signal, exec.agent);
       const rows = ctx.configEditor.configuration();
       if (action === 'list') {
         const parts = pathParts(configuredPath);
@@ -246,7 +249,9 @@ export function apply(ctx, config = {}) {
       }
 
       let inheritedRemains = false;
+      exec.signal.throwIfAborted();
       await ctx.configEditor.edit(row.entry, (current, inherited) => {
+        exec.signal.throwIfAborted();
         if (action === 'upsert') {
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
             servers[serverName] = args.definition;
@@ -294,6 +299,7 @@ export function apply(ctx, config = {}) {
         return { action, skills: snapshot.skills, complete: snapshot.complete, scope: exec.agent ? 'agent' : 'profile' };
       }
       const skillName = requireString(args.name, 'name');
+      if (action === 'register' || action === 'unregister') await compatibility.assertWrite('skills', exec.signal, exec.agent);
       if (action === 'get') {
         const skill = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
         return { action, skill: skill ?? null };
@@ -351,6 +357,7 @@ export function apply(ctx, config = {}) {
         if (pendingSkills.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being registered`);
         const dispose = runtimeSkills.get(skillName);
         if (!dispose) return { action, name: skillName, changed: false };
+        exec.signal.throwIfAborted();
         dispose();
         runtimeSkills.delete(skillName);
         return { action, name: skillName, changed: true };
@@ -371,6 +378,12 @@ export function apply(ctx, config = {}) {
       const exec = { signal, agent: target?.agent };
       let value;
       switch (method) {
+        case 'compatibility.status': {
+          const selected = discovery.view(args);
+          value = { ...await compatibility.report(selected.agent), context: selected.context };
+          discovery.assertCurrent(selected, signal);
+          break;
+        }
         case 'contexts.list':
           value = await discovery.contexts(signal);
           break;
@@ -420,18 +433,18 @@ export function apply(ctx, config = {}) {
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof ManagerError || error instanceof DiscoveryError;
+      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError;
       return {
         ok: false,
         error: {
-          code: 'MCP_SKILL_MANAGER_OPERATION_FAILED',
+          code: error instanceof CompatibilityError ? 'MCP_SKILL_MANAGER_INCOMPATIBLE' : 'MCP_SKILL_MANAGER_OPERATION_FAILED',
           message: knownError ? error.message : 'Host operation failed; check the DSH logs.',
           details: {},
         },
       };
     }
   };
-  const rpcMethods = ['contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
+  const rpcMethods = ['compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
   ctx.inject(['connection'], (webCtx) => {
     webCtx.effect(function* () {
     for (const method of rpcMethods) {

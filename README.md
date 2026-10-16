@@ -4,7 +4,7 @@
 
 ## 安装
 
-需要已安装 DSH，兼容范围为 `^0.2.0-rc.2`。DSH peer 为 optional，包管理器不会因此另外安装一套 DSH；DSH 自身仍执行版本兼容检查。
+需要已安装 DSH，安装版本约束为 `^0.2.0-rc.2`；这不是已验证版本列表。DSH peer 为 optional，包管理器不会因此另外安装一套 DSH；DSH 自身仍执行版本兼容检查。
 
 CLI 管理的 Profile 使用公开 HTTPS 源码压缩包安装，不依赖本机 Git/SSH：
 
@@ -21,6 +21,24 @@ https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main
 ```
 
 若安装器返回 `restart-required`，由使用者选择合适的维护时机重启应用。本插件不触发重启或停止正在运行的任务。入口由 Bundle 的 `cordis.patch.yml` 注册，无安装或构建脚本。
+
+## 官方升级与兼容检查
+
+页面的“兼容检查”展示插件版本、DSH 运行版本、接口能力和写入许可。运行版本只从公开的 `@deepseek-ai/dsh/package.json` 读取，不启动 DSH 主程序、不访问网络，也不由用户配置覆盖。无法解析该公开清单时显示“无法识别”。
+
+| 检查 | 含义 |
+| --- | --- |
+| 安装版本约束 | 包清单允许安装的范围，不是行为验证结果 |
+| 已做隔离回归的版本 | `0.2.0-rc.2`，对应真实 Cordis/React 加进程内服务样本的契约回归，不代表真实桌面端到端验收 |
+| 当前接口能力 | 仅检查所需方法是否存在，不调用业务方法，不证明接口语义相同 |
+| 未验证或未知版本 | 尝试保留目录与正文读取，禁止 MCP 配置写入和 Runtime Skill 注册/注销 |
+| 已测版本缺少接口 | 仅禁用依赖该接口的写操作；读取失败仍显示错误，不把失败当成空目录 |
+
+页面检查失败、协议不匹配、检查进行中或切换会话时，写入保持禁用。Host 对每次配置修改和 Runtime Skill 操作重新检查版本及接口；直接调用 Tool 或 RPC 也不能绕过。兼容检查不会覆盖 Skill 注册时已有的完整目录及回滚校验。插件退出时释放自身 Runtime Skill 不受手动写入闸门阻碍。
+
+Host 的基础启动仍要求 `configEditor`、`skills`、`tools` 服务以及工具注册契约存在；若它们无法满足，DSH Loader 可能无法启动插件，管理页不能代替启动错误诊断。Client 的 Settings/连接基础契约同样必须存在。
+
+官方发布新版本后，维护者需核对公开契约，执行隔离回归、安装包检查及目标版本的真实页面/配置写入验收，再更新已测试版本列表。官方 `0.2.1-alpha.4` 在回归中仅用于验证“未验证版本禁止写入”，没有作为运行环境启动或认证为兼容。只放宽 peer 范围或接口形状检查通过不能替代这些验收。插件不修改官方内部文件，不触发应用升级或重启，也不提供绕过只读闸门的开关。
 
 ## 选择会话
 
@@ -72,7 +90,7 @@ Runtime Skill 随插件退出注销。持久化 Skill 文件的安装、修改�
 
 Client 使用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)`；Host 用精确 POST 路由复用 DSH `/api` 认证。只公开本插件标记的输入错误，外部 Service/provider 异常返回通用错误。
 
-方法包括 `contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
+方法包括 `compatibility.status`、`contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。兼容状态协议为 `protocolVersion: 1`，包括 `runtimeVersion`、`versionStatus`、`testedRuntimeVersions`、`capabilities`、`writes`；无法识别版本时 `runtimeVersion` 为 null。被兼容闸门拒绝的 RPC 返回 `MCP_SKILL_MANAGER_INCOMPATIBLE`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
 
 ## 隔离回归
 
@@ -83,7 +101,7 @@ pnpm --dir test --ignore-workspace install --ignore-scripts
 node test/run.mjs
 ```
 
-共 36 项用例，覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界和写入保护。
+用例覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界、已测/未测/未知版本、接口缺失、状态协议不匹配和 Host 写入保护。测试中的 DSH 清单为隔离目录内的合成版本样本，不能作为真实运行时升级验收。
 
 测试依赖位于独立的 `test` 包，源码副本和报告位于其忽略目录 `.fixture`。每轮将执行副本与实际源码逐字节比较，记录 SHA256；所有用例和清理结束后写最终报告。隔离测试不替代真实浏览器、对方安装环境或外部 MCP 服务验收。
 

@@ -6,10 +6,10 @@
 
 需要已安装 DSH，兼容范围为 `^0.2.0-rc.2`。包通过可选 peer 声明兼容范围，包管理器不会为了安装本插件另外下载一套 DSH；DSH 安装器和启动器仍会执行版本兼容检查。
 
-CLI 管理的 Profile 可以使用以下命令：
+CLI 管理的 Profile 可以使用以下命令。安装目标为公开 HTTPS 源码压缩包，不依赖本机 Git 或 SSH 配置：
 
 ```sh
-dsh plugin --profile web add "git+https://github.com/gtk96/dsh-mcp-skill-manager.git#main" --registry https://registry.npmjs.org/
+dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main" --registry https://registry.npmjs.org/
 ```
 
 将 `web` 替换为需要安装的 CLI Profile。Host 管理工具需要该 Profile 提供 `configEditor`、`skills`、`tools` 服务；设置页面另需 Web `connection` 和 Settings 服务。缺少 Web 连接时，仅挂载 Host 工具。
@@ -17,7 +17,7 @@ dsh plugin --profile web add "git+https://github.com/gtk96/dsh-mcp-skill-manager
 `desktop` Profile 由 Electron 应用管理，普通 `dsh` CLI 不接受该 Profile。桌面版在侧边栏插件管理器选择安装 Bundle，粘贴以下安装目标，registry 使用 `https://registry.npmjs.org/`：
 
 ```text
-git+https://github.com/gtk96/dsh-mcp-skill-manager.git#main
+https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main
 ```
 
 替换已经加载的包后重启 DSH，让 Host 和 Client 读取同一份入口文件。Bundle 的 `cordis.patch.yml` 向 Profile 注册 `mcp-skill-manager` 插件行。Host 入口为 `index.js`，Client 设置页入口为 `client.js`，无需构建或安装脚本。
@@ -62,6 +62,7 @@ Client 通过 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, ar
 
 ## 安装诊断
 
+- `Host key verification failed`：pnpm 解析 GitHub Git 安装目标时可能调用 SSH；使用上方 HTTPS 压缩包地址安装。
 - `incompatible-version`：核对提示中的 DSH 实际版本与本包声明范围；一般安装操作不需要设置版本豁免。
 - 条目等待服务：检查目标 Profile 是否提供 Host 硬依赖；Web 设置页还需要 Settings 和连接服务。
 - 包管理器的 `deprecated` 提示：它描述依赖弃用，不等于插件激活失败；应结合提示中点名的包、安装退出码与 Host/Client 激活结果判断，不能仅凭一条弃用提示归因于本插件。

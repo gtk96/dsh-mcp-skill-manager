@@ -48,12 +48,27 @@ Settings 的 **MCP & Skills** 页面提供“能力视图”选择器。初始�
 
 Skill 查询使用所选 Agent 的作用域、会话工作目录及其预设中的 Skill 服务。列表和正文使用相同上下文；会话切换会失效旧请求、清空旧正文及编辑确认。迟到响应与上下文不匹配的响应不能覆盖当前视图。读取过程中 Agent 被替换、卸载或切换预设时，返回错误并要求刷新。
 
+## 手动添加 MCP
+
+MCP 主页面提供 **新增 MCP**，无需填写自定义映射路径。先选择 **Profile 全局视图**，等待兼容检查完成，再填写 Server 名称和传输方式：
+
+- **stdio**：启动命令、JSON 字符串数组参数、可选工作目录、进程环境变量引用。
+- **streamable-http**：HTTP/HTTPS MCP 地址、请求头环境变量引用。地址不接受用户名、密码、查询参数或片段，认证使用请求头环境变量引用。
+
+名称为 1–32 位字母、数字、下划线或短横线。新增操作拒绝覆盖同名托管配置或同名 Profile 原生 MCP。该入口只新增配置；不会自动安装服务器程序或删除已有连接。
+
+引用字段只保存环境变量名，例如 `{"API_KEY":"MY_MCP_API_KEY"}`，或请求头的 `{"Authorization":"MY_MCP_AUTH_HEADER"}`。对应变量必须已存在于运行 DSH 的进程环境中；请求头变量应包含完整头值。原值仅在内存中解析后交给官方桥接器，不写入本插件配置，不返回管理目录。不要在命令、参数或 URL 中填写凭据。缺少引用变量、定义无效或桥接器不可用时，新增在保存前失败。
+
+配置通过 `configEditor.edit()` 保存在**当前管理插件条目**的 `managedServers` 字段，不生成独立的 Profile 原生 MCP 条目。该字段声明为官方支持的 volatile 实时字段；Loader 更新引用后发出 `loader/volatile-update`，插件按定义增量挂载 `@deepseek-ai/dsh-mcp-client` 子实例。定义未变化的连接保持原实例，新增不重新挂载管理插件或已有连接；插件卸载会释放自己创建的连接。桥接器是 optional peer，由 DSH 提供，不自动安装另一套。
+
+“配置已保存”只表示持久化成功并安排加载，**不表示远端连接成功**。来源卡片把这些记录标为本插件持久化配置，连接状态仍为未知；所选会话实际可见的工具以发现目录为准。插件本地解析或挂载准备失败显示限定原因及 **重试加载 MCP**，重试不保存配置、不重连健康项；释放失败会保留记录并阻止同名替代，但不阻断其他项。官方桥接器内部连接失败仍需查看其诊断，不反推在线状态。高级映射入口拒绝修改本管理插件自身配置，托管定义须走专用校验入口。
+
 ## MCP 发现及来源边界
 
 主视图展示三类信息：
 
 - **MCP 命名候选**：所选视图中实际可见、名称以 `mcp__` 开头的工具，保留完整 public name。该前缀只能说明名称符合命名约定，不能证明工具确实来自 MCP 桥。
-- **原生 MCP 配置来源**：Profile 内 `@deepseek-ai/dsh-mcp-client` 配置条目，以及所选会话预设中的同类条目。展示白名单标识、serverName（来源提供时）、预设和插件阶段，不返回 command、env、URL 或 headers。
+- **MCP 配置来源**：Profile 内 `@deepseek-ai/dsh-mcp-client` 配置条目、所选会话预设中的同类条目，以及本插件持久化的 `managedServers` 定义。来源明确区分，展示白名单标识、serverName（来源提供时）、预设和插件阶段，不返回 command、env、URL 或 headers。
 - **全部可见工具**：支持按名称检索，覆盖未遵循上述命名约定的其他工具。定义与 Profile 相同只表示定义等价，不作为注册来源证明。
 
 当前 DSH MCP 桥没有公开完整的 server provenance 或连接状态目录。工具名有归一化、截断和哈希规则，serverName 也允许双下划线，因此本插件不拆分 public name 来还原 server/raw tool 身份。普通插件同样可以注册同形名称，命名候选不能作为来源证明。
@@ -90,7 +105,9 @@ Runtime Skill 随插件退出注销。持久化 Skill 文件的安装、修改�
 
 Client 使用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)`；Host 用精确 POST 路由复用 DSH `/api` 认证。只公开本插件标记的输入错误，外部 Service/provider 异常返回通用错误。
 
-方法包括 `compatibility.status`、`contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。兼容状态协议为 `protocolVersion: 1`，包括 `runtimeVersion`、`versionStatus`、`testedRuntimeVersions`、`capabilities`、`writes`；无法识别版本时 `runtimeVersion` 为 null。被兼容闸门拒绝的 RPC 返回 `MCP_SKILL_MANAGER_INCOMPATIBLE`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
+方法包括 `mcp.retry`、`mcp.managed`、`mcp.add`、`compatibility.status`、`contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。兼容状态协议为 `protocolVersion: 1`，包括 `runtimeVersion`、`versionStatus`、`testedRuntimeVersions`、`capabilities`、`writes`；无法识别版本时 `runtimeVersion` 为 null。被兼容闸门拒绝的 RPC 返回 `MCP_SKILL_MANAGER_INCOMPATIBLE`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
+
+`mcp.managed` 返回 `{ writable, servers }`，目录仅含名称、传输类型、本地声明阶段、限定诊断和未知连接状态。`mcp.retry` 接受 `{ sessionId: "", serverName }`，只重试本插件本地失败项，返回 `{ retried: true, serverName, connectionState: "unknown" }`；不保存定义，也不重连健康项。`mcp.add` 接受 `{ sessionId: "", serverName, definition }`，定义字段为 `transport`、stdio 的 `command/args/cwd/envFromEnv` 或 HTTP 的 `url/headersFromEnv`；返回 `{ saved: true, serverName, connectionState: "unknown" }`。它只创建新配置，不覆盖；保存后的连接失败不会把持久配置自动撤销。
 
 ## 隔离回归
 
@@ -101,7 +118,7 @@ pnpm --dir test --ignore-workspace install --ignore-scripts
 node test/run.mjs
 ```
 
-用例覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界、已测/未测/未知版本、接口缺失、状态协议不匹配和 Host 写入保护。测试中的 DSH 清单为隔离目录内的合成版本样本，不能作为真实运行时升级验收。
+用例覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界、已测/未测/未知版本、接口缺失、状态协议不匹配、Host 写入保护、手动添加表单、同名拒绝、环境引用和增量连接清理。测试使用真实 Cordis/Schemastery 的 volatile 引用更新函数和对应事件，MCP 桥接器是不会执行命令或联网的隔离样本。测试中的 DSH 清单为隔离目录内的合成版本样本，不能作为真实运行时升级或 MCP 传输验收。
 
 测试依赖位于独立的 `test` 包，源码副本和报告位于其忽略目录 `.fixture`。每轮将执行副本与实际源码逐字节比较，记录 SHA256；所有用例和清理结束后写最终报告。隔离测试不替代真实浏览器、对方安装环境或外部 MCP 服务验收。
 

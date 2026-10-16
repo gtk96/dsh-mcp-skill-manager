@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
+import { createManagedMcp, ManagedMcpError } from './managed-mcp.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -12,6 +13,7 @@ const rpcPrefix = 'mcp-skill-manager.';
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),
+  managedServers: z.dict(z.any()).default({}).volatile(),
 });
 
 const secretName = /secret|token|password|credential|authorization|api.?key/i;
@@ -157,7 +159,7 @@ function tool(name, description, parameters, execute) {
       try {
         return await execute(args, exec);
       } catch (error) {
-        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError) throw error;
+        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -184,6 +186,12 @@ function skillLookup(exec) {
 export function apply(ctx, config = {}) {
   const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx, discovery.serviceFor);
+  const managedMcp = createManagedMcp(ctx, config, compatibility);
+  const discoverMcp = async (target, signal) => {
+    const result = await discovery.mcp(target, signal);
+    result.configured.push(...managedMcp.catalog().servers);
+    return result;
+  };
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
   const runtimeProvider = `${name}:${randomUUID()}`;
@@ -204,7 +212,7 @@ export function apply(ctx, config = {}) {
         ? args.configPath
         : config.mcpConfigPath;
       if (action === 'discover' || (action === 'list' && !configuredPath?.trim())) {
-        return { action, ...await discovery.mcp(discovery.view({}, exec.agent), exec.signal) };
+        return { action, ...await discoverMcp(discovery.view({}, exec.agent), exec.signal) };
       }
       if (action === 'upsert' || action === 'remove') await compatibility.assertWrite('mcp', exec.signal, exec.agent);
       const rows = ctx.configEditor.configuration();
@@ -230,6 +238,7 @@ export function apply(ctx, config = {}) {
       if (matches.length > 1) throw new ManagerError('Multiple config entries match entryId; use the unique entry id');
       const row = matches[0];
       if (!row) throw new ManagerError(`No active config entry matches ${entryId}`);
+      if (managedMcp.owns(row.entry)) throw new ManagerError('本插件的托管 MCP 配置须使用专用新增和重试入口，不能通过高级映射修改。');
       const serverName = requireString(args.name, 'name');
       if (forbiddenPathParts.has(serverName)) throw new ManagerError('name is not a valid server key');
       if (action === 'upsert' && !isRecord(args.definition)) {
@@ -372,7 +381,7 @@ export function apply(ctx, config = {}) {
       const args = isRecord(payload) ? payload : {};
       if (args.sessionId !== undefined && typeof args.sessionId !== 'string') throw new ManagerError('sessionId must be a string');
       signal.throwIfAborted();
-      const mutation = ['mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method);
+      const mutation = ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method);
       if (mutation && args.sessionId?.trim()) throw new ManagerError('This operation changes the Profile global configuration or Runtime Skills; select the Profile global view first.');
       const target = method.startsWith('skills.') ? discovery.view(args) : undefined;
       const exec = { signal, agent: target?.agent };
@@ -387,8 +396,18 @@ export function apply(ctx, config = {}) {
         case 'contexts.list':
           value = await discovery.contexts(signal);
           break;
+        case 'mcp.managed':
+          await managedMcp.sync();
+          value = managedMcp.catalog();
+          break;
+        case 'mcp.retry':
+          value = await managedMcp.retry(args, signal);
+          break;
+        case 'mcp.add':
+          value = await managedMcp.add(args, signal);
+          break;
         case 'mcp.discover':
-          value = await discovery.mcp(discovery.view(args), signal);
+          value = await discoverMcp(discovery.view(args), signal);
           break;
         case 'mcp.catalog':
           value = readMcpCatalog(ctx, config, args);
@@ -433,7 +452,7 @@ export function apply(ctx, config = {}) {
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError;
+      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError;
       return {
         ok: false,
         error: {
@@ -444,7 +463,7 @@ export function apply(ctx, config = {}) {
       };
     }
   };
-  const rpcMethods = ['compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
+  const rpcMethods = ['mcp.retry', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
   ctx.inject(['connection'], (webCtx) => {
     webCtx.effect(function* () {
     for (const method of rpcMethods) {

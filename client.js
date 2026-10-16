@@ -84,6 +84,20 @@ function ManagerPage(props) {
   const [runtimeBusy, setRuntimeBusy] = React.useState(true);
   const [runtimeError, setRuntimeError] = React.useState("");
   const [toolFilter, setToolFilter] = React.useState("");
+  const managedRequest = React.useRef(0);
+  const [managedWritable, setManagedWritable] = React.useState(false);
+  const [nativeFormOpen, setNativeFormOpen] = React.useState(false);
+  const [nativeBusy, setNativeBusy] = React.useState(false);
+  const [nativeError, setNativeError] = React.useState("");
+  const [nativeNotice, setNativeNotice] = React.useState("");
+  const [nativeName, setNativeName] = React.useState("");
+  const [nativeTransport, setNativeTransport] = React.useState("stdio");
+  const [nativeCommand, setNativeCommand] = React.useState("");
+  const [nativeArgs, setNativeArgs] = React.useState("[]");
+  const [nativeCwd, setNativeCwd] = React.useState("");
+  const [nativeUrl, setNativeUrl] = React.useState("");
+  const [nativeRefs, setNativeRefs] = React.useState("{}");
+  const canAddNative = !sessionId && canEditMcp && managedWritable && !nativeBusy && writeCount === 0;
   const contextsRequest = React.useRef(0);
   const runtimeRequest = React.useRef(0);
   const skillRequest = React.useRef(0);
@@ -129,6 +143,7 @@ function ManagerPage(props) {
     setCompatibility(null);
     setCompatibilityBusy(true);
     setCompatibilityError("");
+    setNativeFormOpen(false);
     setServerFormOpen(false);
     setRemoveServerName("");
     setSkillFormOpen(false);
@@ -172,6 +187,10 @@ function ManagerPage(props) {
   function selectContext(next) {
     if (writeCount || next === sessionId) return;
     ++compatibilityRequest.current;
+    ++managedRequest.current;
+    setManagedWritable(false);
+    setNativeError("");
+    setNativeNotice("");
     setCompatibility(null);
     ++mcpRequest.current;
     ++runtimeRequest.current;
@@ -185,6 +204,7 @@ function ManagerPage(props) {
     setRuntimeCatalog(null);
     setSkills([]);
     setSelectedSkill(null);
+    setNativeFormOpen(false);
     setServerFormOpen(false);
     setRemoveServerName("");
     setSkillFormOpen(false);
@@ -194,6 +214,61 @@ function ManagerPage(props) {
     setRuntimeError("");
     setMcpNotice("");
     setSkillsNotice("");
+  }
+
+  async function refreshManaged() {
+    const requestId = ++managedRequest.current;
+    setManagedWritable(false);
+    try {
+      const result = await callHost("mcp.managed");
+      if (requestId !== managedRequest.current) return;
+      if (!isRecord(result) || typeof result.writable !== "boolean" || !Array.isArray(result.servers)) throw new Error("手动 MCP 配置目录格式无效。");
+      setManagedWritable(result.writable);
+    } catch (error) {
+      if (requestId === managedRequest.current) setNativeError(errorText(error));
+    }
+  }
+
+  async function retryNativeMcp(serverName) {
+    if (!canAddNative) return;
+    setNativeBusy(true); setNativeError(""); setNativeNotice("");
+    setWriteCount((count) => count + 1);
+    try {
+      await callHost("mcp.retry", { serverName });
+      setNativeNotice("已重试本地失败配置；连接状态仍为未知，请查看加载提示和工具目录。");
+      await Promise.all([refreshRuntime(), refreshManaged()]);
+    } catch (error) { setNativeError(errorText(error)); }
+    finally { setNativeBusy(false); setWriteCount((count) => count - 1); }
+  }
+
+  async function addNativeMcp(event) {
+    event.preventDefault();
+    if (!canAddNative) { setNativeError("请先完成兼容检查并选择 Profile 全局视图，再添加 MCP。"); return; }
+    setNativeError("");
+    setNativeNotice("");
+    let definition;
+    try {
+      const refs = JSON.parse(nativeRefs);
+      if (!isRecord(refs)) throw new Error("环境变量引用必须是 JSON 对象。");
+      if (nativeTransport === "stdio") {
+        const args = JSON.parse(nativeArgs);
+        if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) throw new Error("参数必须是 JSON 字符串数组。");
+        definition = { transport: "stdio", command: nativeCommand, args, ...(nativeCwd.trim() ? { cwd: nativeCwd.trim() } : {}), envFromEnv: refs };
+      } else definition = { transport: "streamable-http", url: nativeUrl, headersFromEnv: refs };
+    } catch {
+      setNativeError("参数或环境变量引用的 JSON 格式无效，请检查数组和对象格式。");
+      return;
+    }
+    setNativeBusy(true);
+    setWriteCount((count) => count + 1);
+    try {
+      await callHost("mcp.add", { serverName: nativeName.trim(), definition });
+      setNativeFormOpen(false);
+      setNativeCommand(""); setNativeArgs("[]"); setNativeCwd(""); setNativeUrl(""); setNativeRefs("{}");
+      setNativeNotice("MCP 配置已保存并交给官方桥接器加载；连接状态仍为未知，请刷新工具目录确认能力是否出现。");
+      await Promise.all([refreshRuntime(), refreshManaged()]);
+    } catch (error) { setNativeError(errorText(error)); }
+    finally { setNativeBusy(false); setWriteCount((count) => count - 1); }
   }
 
   async function refreshRuntime() {
@@ -296,11 +371,13 @@ function ManagerPage(props) {
   React.useEffect(() => { void refreshContexts(); }, []);
   React.useEffect(() => {
     void refreshCompatibility();
+    void refreshManaged();
     void refreshMcp("");
     void refreshRuntime();
     void refreshSkills();
     return () => {
       ++compatibilityRequest.current;
+      ++managedRequest.current;
       ++mcpRequest.current;
       ++runtimeRequest.current;
       ++skillRequest.current;
@@ -450,7 +527,24 @@ function ManagerPage(props) {
       h("div", { className: "dsh-msm-row" },
         h(Field, { label: "搜索可见工具", hint: "按完整工具名检索，例如 mc、holo 或 okr。" },
           h("input", { className: "dsh-msm-input", "aria-label": "搜索可见工具", value: toolFilter, onChange: (event) => setToolFilter(event.currentTarget.value) })),
-        h("button", { className: "dsh-msm-button", type: "button", disabled: runtimeBusy, onClick: () => void refreshRuntime() }, runtimeBusy ? "发现中…" : "刷新 MCP 发现")),
+        h("button", { className: "dsh-msm-button", type: "button", disabled: runtimeBusy, onClick: () => void refreshRuntime() }, runtimeBusy ? "发现中…" : "刷新 MCP 发现"),
+        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: !canAddNative, onClick: () => { setNativeFormOpen((open) => !open); setNativeError(""); setNativeNotice(""); } }, nativeFormOpen ? "关闭新增 MCP" : "新增 MCP")),
+      sessionId ? h("div", { className: "dsh-msm-notice" }, "新增 MCP 会保存到 Profile；请在上方能力视图选择 Profile 全局视图后添加。") : null,
+      nativeError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, nativeError) : null,
+      nativeNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, nativeNotice) : null,
+      nativeFormOpen ? h("form", { className: "dsh-msm-card", "aria-label": "新增 MCP", onSubmit: addNativeMcp },
+        h(Field, { label: "Server 名称", hint: "1–32 位字母、数字、下划线或短横线；同名配置不会覆盖。" },
+          h("input", { className: "dsh-msm-input", "aria-label": "MCP Server 名称", value: nativeName, required: true, maxLength: 32, onChange: (event) => setNativeName(event.currentTarget.value) })),
+        h(Field, { label: "传输方式" }, h("select", { className: "dsh-msm-select", "aria-label": "MCP 传输方式", value: nativeTransport, onChange: (event) => { setNativeTransport(event.currentTarget.value); setNativeRefs("{}"); } },
+          h("option", { value: "stdio" }, "stdio（本地命令）"), h("option", { value: "streamable-http" }, "HTTP（streamable-http）"))),
+        nativeTransport === "stdio" ? h(React.Fragment, null,
+          h(Field, { label: "启动命令", hint: "填写可执行文件或命令名；请勿在命令或参数中填写凭据。" }, h("input", { className: "dsh-msm-input", "aria-label": "MCP 启动命令", value: nativeCommand, required: true, onChange: (event) => setNativeCommand(event.currentTarget.value) })),
+          h(Field, { label: "参数（JSON 数组）" }, h("textarea", { className: "dsh-msm-textarea dsh-msm-textarea-short", "aria-label": "MCP 参数", value: nativeArgs, onChange: (event) => setNativeArgs(event.currentTarget.value), spellCheck: false })),
+          h(Field, { label: "工作目录（可选）" }, h("input", { className: "dsh-msm-input", "aria-label": "MCP 工作目录", value: nativeCwd, onChange: (event) => setNativeCwd(event.currentTarget.value) })))
+          : h(Field, { label: "MCP HTTP 地址", hint: "HTTP/HTTPS 地址，不含用户名、密码、查询参数或片段。" }, h("input", { className: "dsh-msm-input", "aria-label": "MCP HTTP 地址", value: nativeUrl, required: true, type: "url", onChange: (event) => setNativeUrl(event.currentTarget.value) })),
+        h(Field, { label: nativeTransport === "stdio" ? "进程环境变量引用（JSON 对象）" : "请求头环境变量引用（JSON 对象）", hint: nativeTransport === "stdio" ? '例如 {"API_KEY":"MY_MCP_API_KEY"}，只保存环境变量名。' : '例如 {"Authorization":"MY_MCP_AUTH_HEADER"}；对应环境变量需包含完整头值。' },
+          h("textarea", { className: "dsh-msm-textarea dsh-msm-textarea-short", "aria-label": "MCP 环境变量引用", value: nativeRefs, onChange: (event) => setNativeRefs(event.currentTarget.value), spellCheck: false })),
+        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: !canAddNative }, nativeBusy ? "保存中…" : "保存并加载 MCP")) : null,
       h("div", { className: "dsh-msm-muted" }, "目录按所选会话的实际工具作用域读取。MCP 命名候选保留完整工具名；命名约定不能证明来源，工具可见也不代表连接在线。当前运行时未提供权威连接状态，页面显示为未知。"),
       runtimeError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, runtimeError) : null,
       runtimeBusy ? h("div", { className: "dsh-msm-muted" }, "正在读取所选会话的能力…") : null,
@@ -461,10 +555,12 @@ function ManagerPage(props) {
           h("h3", { className: "dsh-msm-card-title" }, tool.name),
           h("div", { className: "dsh-msm-muted" }, `${origin(tool)} · 来源待核实 · 连接状态：未知`))))
           : h("div", { className: "dsh-msm-muted" }, runtimeCatalog.toolsAvailable ? "此视图没有匹配的 MCP 命名候选。原生配置来源与其他有效工具见下方。" : "工具目录不可用，不能据此判断 MCP 数量。"),
-        h("h3", { className: "dsh-msm-card-title" }, `原生 MCP 配置来源（${runtimeCatalog.configured.length}）`),
+        h("h3", { className: "dsh-msm-card-title" }, `MCP 配置来源（${runtimeCatalog.configured.length}）`),
         runtimeCatalog.configured.map((row, index) => h("article", { className: "dsh-msm-card", key: `${row.kind}:${row.entryId}:${index}` },
           h("h3", { className: "dsh-msm-card-title" }, row.serverName || row.entryId || "MCP 配置条目"),
-          h("div", { className: "dsh-msm-muted" }, row.kind === "preset-config" ? `来源：预设 ${row.preset}` : "来源：Profile 配置（不代表所选会话可调用）"),
+          h("div", { className: "dsh-msm-muted" }, row.kind === "managed-config" ? "来源：本插件持久化配置，使用官方 MCP 桥接器" : row.kind === "preset-config" ? `来源：预设 ${row.preset}` : "来源：Profile 配置（不代表所选会话可调用）"),
+          row.phase === "failed" ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, row.error || "本地加载失败；请检查命令、环境变量引用和官方 MCP 桥接器。") : null,
+          row.phase === "failed" ? h("button", { className: "dsh-msm-button", type: "button", disabled: !canAddNative, onClick: () => void retryNativeMcp(row.serverName) }, "重试加载 MCP") : null,
           h("div", { className: "dsh-msm-muted" }, `插件状态：${["等待", "加载中", "已激活", "失败", "已卸载", "卸载中"][row.fiberState] || "未知"} · 连接状态：未知`))),
         h("details", { open: !!filter },
           h("summary", null, `该视图全部可见工具（${visibleTools.length}）`),

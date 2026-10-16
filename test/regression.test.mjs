@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { Context } from '@deepseek-ai/cordis';
 import React from 'react';
@@ -11,6 +12,8 @@ import Renderer, { act } from 'react-test-renderer';
 import semver from 'semver';
 import * as plugin from './host.mjs';
 
+const require = createRequire(import.meta.url);
+const { updateVolatile } = createRequire(require.resolve('@deepseek-ai/cordis/package.json'))('@deepseek-ai/cosmokit');
 const root = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(root, '../..');
 const clone = (value) => structuredClone(value);
@@ -20,7 +23,7 @@ const progress = resolve(root, 'test-progress.log');
 writeFileSync(progress, 'isolated test module loaded\n');
 const mark = (message) => appendFileSync(progress, message + '\n');
 const hashes = {};
-for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['package.json', 'package.json']]) {
+for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['package.json', 'package.json']]) {
   const copy = readFileSync(resolve(root, fixture));
   assert.deepEqual(copy, readFileSync(resolve(repo, source)), 'Tested fixture must match the actual plugin source');
   hashes[source] = createHash('sha256').update(copy).digest('hex');
@@ -96,6 +99,16 @@ async function fixture(options = {}) {
   const configEditor = {
     configuration: () => rows,
     async edit(target, change) {
+      if (target === managerEntry) {
+        const next = change(clone(target.options.config), {});
+        trace.edits++;
+        target.options.config = clone(next);
+        updateVolatile(fiber.config.managedServers, plugin.Config(next).managedServers);
+        const self = Object.create(fiber.ctx);
+        self[Context.filter] = (owner) => owner.fiber === fiber;
+        fiber.ctx.emit(self, 'loader/volatile-update', [['managedServers']]);
+        return;
+      }
       assert.equal(target, entry);
       trace.edits++;
       const next = change(clone(entry.options.config), clone(inherited));
@@ -164,9 +177,20 @@ async function fixture(options = {}) {
     composedPreset: (context) => context?.preset,
     compositionInventory: async () => options.inventory ?? [],
   });
+  let managerEntry;
+  const bridgeRuns = new Map();
+  const bridgeTrace = { starts: [], stops: [] };
+  ctx.reflect.provide('fixtureMcp', {
+    start(config) { bridgeRuns.set(config.serverName, config); bridgeTrace.starts.push(config.serverName); },
+    stop(name) { bridgeRuns.delete(name); bridgeTrace.stops.push(name); },
+  });
   let removeConnection;
   if (options.web !== false) removeConnection = ctx.reflect.provide('connection', connection);
-  const fiber = await ctx.plugin(plugin, { mcpConfigPath: 'maps.A' });
+  const fiber = await ctx.plugin(plugin, { mcpConfigPath: 'maps.A', managedServers: options.managedServers ?? {} });
+  if (options.managed) {
+    managerEntry = { id: 'include:mcp-skill-manager', fiber, options: { id: 'mcp-skill-manager', name: 'dsh-mcp-skill-manager', config: { mcpConfigPath: 'maps.A', managedServers: clone(options.managedServers ?? {}) } } };
+    rows.push({ entry: managerEntry, inherited: {}, override: {} });
+  }
   await tick();
   const exec = (extra = {}) => ({ signal: new AbortController().signal, ...extra });
   const call = (name, args, extra) => tools.get(name).execute(args, exec(extra));
@@ -187,7 +211,7 @@ async function fixture(options = {}) {
     return envelope.result;
   };
   return {
-    ctx, fiber, tools, routes, runtime, trace, entry, inherited, rows, skills, agents,
+    ctx, fiber, tools, routes, runtime, trace, entry, inherited, rows, skills, agents, managerEntry, bridgeRuns, bridgeTrace,
     call, rpc,
     async attachWeb() { removeConnection = ctx.reflect.provide('connection', connection); await tick(); await tick(); },
     async detachWeb() { if (removeConnection) { await removeConnection(); removeConnection = undefined; } await tick(); },
@@ -258,7 +282,7 @@ async function page(t, host, intercept, sessionRows = {}) {
     async setPath(value) { await act(async () => { this.path().props.onChange({ currentTarget: { value } }); }); },
     alerts() { return renderer.root.findAllByProps({ role: 'alert' }).map(text); },
     content() { return text(renderer.root); },
-    mutations() { return requests.filter(({ method }) => ['mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method)); },
+    mutations() { return requests.filter(({ method }) => ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method)); },
   };
 }
 
@@ -274,12 +298,12 @@ await check('Optional Web arrival and removal do not stop Host tools or leak rou
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 10);
+  assert.equal(host.routes.size, 13);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 2);
   await host.attachWeb();
-  assert.equal(host.routes.size, 10);
+  assert.equal(host.routes.size, 13);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {

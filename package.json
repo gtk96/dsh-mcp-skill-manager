@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-skill-manager",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "DeepSeek Harness plugin for MCP configuration and runtime skill management",
   "type": "module",
   "main": "./index.js",
@@ -15,6 +15,7 @@
     "index.js",
     "discovery.js",
     "compatibility.js",
+    "managed-mcp.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
@@ -35,10 +36,14 @@
     "url": "https://github.com/gtk96/dsh-mcp-skill-manager.git"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.2.0-rc.2"
+    "@deepseek-ai/dsh": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-mcp-client": {
       "optional": true
     }
   },

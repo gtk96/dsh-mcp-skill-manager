@@ -23,7 +23,7 @@ await check('Compatibility reports version and methods without invoking business
   const result = await host.rpc('compatibility.status');
   assert.equal(result.ok, true);
   assert.equal(result.value.runtimeVersion, '0.2.0-rc.2');
-  assert.equal(result.value.pluginVersion, '0.4.0');
+  assert.equal(result.value.pluginVersion, '0.5.0');
   assert.equal(result.value.versionStatus, 'tested');
   assert.deepEqual(result.value.writes, { mcp: true, skills: true });
   assert.equal(result.value.capabilities.sessionSelection, false);

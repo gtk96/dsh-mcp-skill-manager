@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 
 export const name = 'mcp-skill-manager';
-export const inject = ['configEditor', 'skills', 'tools', 'connection'];
+export const inject = ['configEditor', 'skills', 'tools'];
+
+class ManagerError extends Error {}
 
 const rpcPrefix = 'mcp-skill-manager.';
 export const Config = z.object({
@@ -19,11 +21,11 @@ function isRecord(value) {
 
 function pathParts(path) {
   if (typeof path !== 'string' || !path.trim()) {
-    throw new TypeError('configPath must be a non-empty dot path');
+    throw new ManagerError('configPath must be a non-empty dot path');
   }
   const parts = path.split('.').map((part) => part.trim());
   if (parts.some((part) => !part || forbiddenPathParts.has(part))) {
-    throw new TypeError('configPath contains an invalid path segment');
+    throw new ManagerError('configPath contains an invalid path segment');
   }
   return parts;
 }
@@ -54,19 +56,21 @@ function updatePath(root, parts, updateLeaf) {
   return next;
 }
 
-function mergeRecords(base, override) {
-  const result = { ...base };
-  for (const [key, value] of Object.entries(override)) {
-    result[key] = isRecord(value) && isRecord(result[key])
-      ? mergeRecords(result[key], value)
-      : value;
-  }
-  return result;
+function effectiveConfig(row) {
+  return isRecord(row.entry?.options?.config) ? row.entry.options.config : {};
 }
 
 function entryKeys(entry) {
-  return [entry?.id, entry?.patchId, entry?.name]
+  return [entry?.id, entry?.options?.id, entry?.options?.name]
     .filter((value) => typeof value === 'string');
+}
+
+function entrySummary(entry) {
+  return {
+    id: entry.id,
+    patchId: entry.options?.id,
+    name: entry.options?.name,
+  };
 }
 
 function redactServer(server) {
@@ -88,18 +92,11 @@ function readMcpCatalog(ctx, config, request) {
   const parts = typeof requestedPath === 'string' && requestedPath.trim()
     ? pathParts(requestedPath)
     : undefined;
-  const entries = ctx.configEditor.configuration().map(({ entry, inherited, override }) => {
-    const effective = mergeRecords(
-      isRecord(inherited) ? inherited : {},
-      isRecord(override) ? override : {},
-    );
+  const entries = ctx.configEditor.configuration().map((row) => {
+    const effective = effectiveConfig(row);
     const servers = parts ? getAt(effective, parts) : undefined;
     return {
-      entry: {
-        id: entryKeys(entry)[0] ?? 'unknown-entry',
-        patchId: entry?.patchId,
-        name: entry?.name,
-      },
+      entry: entrySummary(row.entry),
       servers: isRecord(servers)
         ? Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)]))
         : {},
@@ -134,9 +131,9 @@ function tool(name, description, parameters, execute) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     async execute(args, exec) {
-      if (!isRecord(args)) throw new TypeError('Tool arguments must be an object');
+      if (!isRecord(args)) throw new ManagerError('Tool arguments must be an object');
       for (const key of required) {
-        if (!Object.hasOwn(args, key)) throw new TypeError(`${key} is required`);
+        if (!Object.hasOwn(args, key)) throw new ManagerError(`${key} is required`);
       }
       for (const [key, schema] of Object.entries(parameters)) {
         const value = args[key];
@@ -150,12 +147,17 @@ function tool(name, description, parameters, execute) {
               : schema.type === 'integer'
                 ? Number.isInteger(value)
                 : typeof value === schema.type;
-        if (!validType) throw new TypeError(`${key} must be ${schema.type}`);
+        if (!validType) throw new ManagerError(`${key} must be ${schema.type}`);
         if (schema.enum && !schema.enum.includes(value)) {
-          throw new TypeError(`${key} must be one of: ${schema.enum.join(', ')}`);
+          throw new ManagerError(`${key} must be one of: ${schema.enum.join(', ')}`);
         }
       }
-      return execute(args, exec);
+      try {
+        return await execute(args, exec);
+      } catch (error) {
+        if (error instanceof ManagerError) throw error;
+        throw new ManagerError('Host operation failed; check the DSH logs.');
+      }
     },
   };
 }
@@ -165,8 +167,16 @@ function isSkillName(value) {
 }
 
 function requireString(value, label) {
-  if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${label} is required`);
+  if (typeof value !== 'string' || !value.trim()) throw new ManagerError(`${label} is required`);
   return value.trim();
+}
+
+function skillLookup(exec) {
+  return {
+    signal: exec.signal,
+    scope: exec.agent,
+    cwd: exec.agent?.session?.header?.cwd,
+  };
 }
 
 export function apply(ctx, config = {}) {
@@ -186,26 +196,20 @@ export function apply(ctx, config = {}) {
     async (args, exec) => {
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
-      const configuredPath = args.configPath ?? config.mcpConfigPath;
+      const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
+        ? args.configPath
+        : config.mcpConfigPath;
       const rows = ctx.configEditor.configuration();
       if (action === 'list') {
         const parts = pathParts(configuredPath);
         return {
           action,
           configPath: parts.join('.'),
-          entries: rows.map(({ entry, inherited, override }) => {
-            const effective = mergeRecords(
-              isRecord(inherited) ? inherited : {},
-              isRecord(override) ? override : {},
-            );
-            const servers = getAt(effective, parts);
+          entries: rows.map((row) => {
+            const servers = getAt(effectiveConfig(row), parts);
             if (!isRecord(servers)) return undefined;
             return {
-              entry: {
-                id: entryKeys(entry)[0] ?? 'unknown-entry',
-                patchId: entry?.patchId,
-                name: entry?.name,
-              },
+              entry: entrySummary(row.entry),
               servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)])),
             };
           }).filter(Boolean),
@@ -214,27 +218,30 @@ export function apply(ctx, config = {}) {
 
       const entryId = requireString(args.entryId, 'entryId');
       const parts = pathParts(configuredPath);
-      const row = rows.find(({ entry }) => entryKeys(entry).includes(entryId));
-      if (!row) throw new Error(`No active config entry matches ${entryId}`);
+      const matches = rows.filter(({ entry }) => entryKeys(entry).includes(entryId));
+      if (matches.length > 1) throw new ManagerError('Multiple config entries match entryId; use the unique entry id');
+      const row = matches[0];
+      if (!row) throw new ManagerError(`No active config entry matches ${entryId}`);
       const serverName = requireString(args.name, 'name');
-      if (forbiddenPathParts.has(serverName)) throw new TypeError('name is not a valid server key');
+      if (forbiddenPathParts.has(serverName)) throw new ManagerError('name is not a valid server key');
       if (action === 'upsert' && !isRecord(args.definition)) {
-        throw new TypeError('definition must be a JSON object');
+        throw new ManagerError('definition must be a JSON object');
       }
-      if (action !== 'upsert' && action !== 'remove') throw new TypeError('action must be list, upsert, or remove');
+      if (action !== 'upsert' && action !== 'remove') throw new ManagerError('action must be list, upsert, or remove');
 
       const inheritedServers = getAt(row.inherited, parts);
       const overrideServers = getAt(row.override, parts);
       const inheritedHasServer = isRecord(inheritedServers) && Object.hasOwn(inheritedServers, serverName);
       const overrideHasServer = isRecord(overrideServers) && Object.hasOwn(overrideServers, serverName);
       if (action === 'remove' && inheritedHasServer && !overrideHasServer) {
-        throw new Error(`Cannot remove inherited MCP server ${serverName}; edit its owning config entry instead`);
+        throw new ManagerError(`Cannot remove inherited MCP server ${serverName}; edit its owning config entry instead`);
       }
       if (action === 'remove' && !overrideHasServer) {
         return { action, entryId, configPath: parts.join('.'), name: serverName, changed: false };
       }
 
-      await ctx.configEditor.edit(row.entry, (current) => {
+      let inheritedRemains = false;
+      await ctx.configEditor.edit(row.entry, (current, inherited) => {
         if (action === 'upsert') {
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
             servers[serverName] = args.definition;
@@ -242,12 +249,15 @@ export function apply(ctx, config = {}) {
           });
         }
         if (action === 'remove') {
+          const inheritedMap = getAt(inherited, parts);
+          inheritedRemains = isRecord(inheritedMap) && Object.hasOwn(inheritedMap, serverName);
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
-            delete servers[serverName];
+            if (inheritedRemains) servers[serverName] = inheritedMap[serverName];
+            else delete servers[serverName];
             return servers;
           });
         }
-        throw new TypeError('action must be list, upsert, or remove');
+        throw new ManagerError('action must be list, upsert, or remove');
       });
       return {
         action,
@@ -255,7 +265,7 @@ export function apply(ctx, config = {}) {
         configPath: parts.join('.'),
         name: serverName,
         changed: true,
-        ...(action === 'remove' && inheritedHasServer ? { inheritedRemains: true } : {}),
+        ...(action === 'remove' && inheritedRemains ? { inheritedRemains: true } : {}),
       };
     },
   );
@@ -275,30 +285,31 @@ export function apply(ctx, config = {}) {
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
       if (action === 'list') {
-        const skills = await ctx.skills.list({ signal: exec.signal });
-        return { action, skills };
+        const snapshot = await ctx.skills.snapshot(skillLookup(exec));
+        return { action, skills: snapshot.skills, complete: snapshot.complete, scope: exec.agent ? 'agent' : 'profile' };
       }
       const skillName = requireString(args.name, 'name');
       if (action === 'get') {
-        const skill = await ctx.skills.get(skillName, { signal: exec.signal });
+        const skill = await ctx.skills.get(skillName, skillLookup(exec));
         return { action, skill: skill ?? null };
       }
       if (action === 'register') {
         if (!isSkillName(skillName)) {
-          throw new TypeError('name must be a kebab-case skill name');
+          throw new ManagerError('name must be a kebab-case skill name');
         }
         if (runtimeSkills.has(skillName) || pendingSkills.has(skillName)) {
-          throw new Error(`Runtime skill ${skillName} is already registered by this plugin`);
+          throw new ManagerError(`Runtime skill ${skillName} is already registered by this plugin`);
         }
         const description = requireString(args.description, 'description');
         const content = requireString(args.content, 'content');
         pendingSkills.add(skillName);
         let dispose;
         try {
-          const existing = await ctx.skills.list({ signal: exec.signal });
+          const existing = await ctx.skills.snapshot(skillLookup(exec));
           exec.signal.throwIfAborted();
-          if (existing.some((skill) => skill.name === skillName)) {
-            throw new Error(`Skill ${skillName} already exists in the effective DSH catalog`);
+          if (!existing.complete) throw new ManagerError('Skill discovery is incomplete; retry before registering a runtime skill');
+          if (existing.skills.some((skill) => skill.name === skillName)) {
+            throw new ManagerError(`Skill ${skillName} already exists in the effective DSH catalog`);
           }
           dispose = ctx.skills.register({
             name: skillName,
@@ -306,10 +317,13 @@ export function apply(ctx, config = {}) {
             content,
             source: 'runtime',
             provider: runtimeProvider,
-            ...(typeof args.whenToUse === 'string' ? { whenToUse: args.whenToUse } : {}),
+            ...(typeof args.whenToUse === 'string' && args.whenToUse.trim() ? { whenToUse: args.whenToUse.trim() } : {}),
             invocation: { modelInvocable: true, userInvocable: true },
           });
-          const registered = await ctx.skills.get(skillName, { signal: exec.signal });
+          const observed = await ctx.skills.snapshot(skillLookup(exec));
+          if (!observed.complete) throw new ManagerError('Skill discovery is incomplete; runtime registration was rolled back');
+          const registered = await ctx.skills.get(skillName, skillLookup(exec));
+          exec.signal.throwIfAborted();
           if (
             !registered
             || registered.source !== 'runtime'
@@ -317,7 +331,7 @@ export function apply(ctx, config = {}) {
             || registered.content !== content
             || registered.description !== description
           ) {
-            throw new Error(`Skill ${skillName} did not become the effective runtime definition`);
+            throw new ManagerError(`Skill ${skillName} did not become the effective runtime definition`);
           }
           runtimeSkills.set(skillName, dispose);
           return { action, name: skillName, persisted: false };
@@ -329,21 +343,21 @@ export function apply(ctx, config = {}) {
         }
       }
       if (action === 'unregister') {
-        if (pendingSkills.has(skillName)) throw new Error(`Skill ${skillName} is currently being registered`);
+        if (pendingSkills.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being registered`);
         const dispose = runtimeSkills.get(skillName);
         if (!dispose) return { action, name: skillName, changed: false };
         dispose();
         runtimeSkills.delete(skillName);
         return { action, name: skillName, changed: true };
       }
-      throw new TypeError('action must be list, get, register, or unregister');
+      throw new ManagerError('action must be list, get, register, or unregister');
     },
   );
   const disposeSkillTool = ctx.tools.register(skillsTool);
   const handleRpc = async (method, payload, signal) => {
     try {
       if (payload !== undefined && !isRecord(payload)) {
-        throw new TypeError('RPC arguments must be an object');
+        throw new ManagerError('RPC arguments must be an object');
       }
       const args = isRecord(payload) ? payload : {};
       signal.throwIfAborted();
@@ -361,6 +375,8 @@ export function apply(ctx, config = {}) {
         case 'skills.list': {
           const result = await skillsTool.execute({ action: 'list' }, { signal });
           value = {
+            complete: result.complete,
+            scope: result.scope,
             skills: result.skills.map((skill) => ({
               name: skill.name,
               description: skill.description,
@@ -380,12 +396,11 @@ export function apply(ctx, config = {}) {
           value = await skillsTool.execute({ ...args, action: 'unregister' }, { signal });
           break;
         default:
-          throw new TypeError('Unknown mcp-skill-manager RPC method');
+          throw new ManagerError('Unknown mcp-skill-manager RPC method');
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof TypeError
-        || (error instanceof Error && /^(No active config entry matches |Cannot remove inherited MCP server |Runtime skill .* is already registered|Skill .* (already exists in the effective DSH catalog|is currently being registered|did not become the effective runtime definition))/.test(error.message));
+      const knownError = error instanceof ManagerError;
       return {
         ok: false,
         error: {
@@ -397,10 +412,11 @@ export function apply(ctx, config = {}) {
     }
   };
   const rpcMethods = ['mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
-  const disposeRpc = ctx.effect(function* () {
+  ctx.inject(['connection'], (webCtx) => {
+    webCtx.effect(function* () {
     for (const method of rpcMethods) {
       const endpoint = rpcPrefix + method;
-      yield ctx.connection.fetch.register({
+      yield webCtx.connection.fetch.register({
         path: '/api/' + endpoint,
         methods: ['POST'],
         requestBody: 'buffered',
@@ -420,11 +436,11 @@ export function apply(ctx, config = {}) {
         },
       });
     }
-  }, 'mcp-skill-manager API routes');
+    }, 'mcp-skill-manager API routes');
+  });
 
   ctx.effect(function* () {
-    yield async () => {
-      await disposeRpc();
+    yield () => {
       disposeMcpTool();
       disposeSkillTool();
       for (const dispose of runtimeSkills.values()) dispose();

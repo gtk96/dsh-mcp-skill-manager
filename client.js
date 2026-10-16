@@ -51,11 +51,11 @@ function errorText(error) {
 function createManagerPage(connection) {
 async function callHost(method, args) {
   const result = await connection.rpc.call("/api", "mcp-skill-manager." + method, args ?? {});
-  if (isRecord(result) && Object.prototype.hasOwnProperty.call(result, "ok")) {
-    if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
-    return result.value;
+  if (!isRecord(result) || typeof result.ok !== "boolean") {
+    throw new Error("Host RPC 返回格式无效，请检查插件与 DSH 的版本兼容性。");
   }
-  return result;
+  if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
+  return result.value;
 }
 
 function Field(props) {
@@ -68,9 +68,11 @@ function Field(props) {
 function ManagerPage() {
   const [tab, setTab] = React.useState("mcp");
   const [mcpPath, setMcpPath] = React.useState("");
+  const [loadedPath, setLoadedPath] = React.useState(null);
+  const mcpRequest = React.useRef(0);
   const [mcpEntries, setMcpEntries] = React.useState([]);
   const [entryId, setEntryId] = React.useState("");
-  const [mcpBusy, setMcpBusy] = React.useState(false);
+  const [mcpBusy, setMcpBusy] = React.useState(true);
   const [mcpError, setMcpError] = React.useState("");
   const [mcpNotice, setMcpNotice] = React.useState("");
   const [serverFormOpen, setServerFormOpen] = React.useState(false);
@@ -78,7 +80,8 @@ function ManagerPage() {
   const [definitionText, setDefinitionText] = React.useState("");
   const [removeServerName, setRemoveServerName] = React.useState("");
   const [skills, setSkills] = React.useState([]);
-  const [skillsBusy, setSkillsBusy] = React.useState(false);
+  const [skillsBusy, setSkillsBusy] = React.useState(true);
+  const [skillsComplete, setSkillsComplete] = React.useState(true);
   const [skillsError, setSkillsError] = React.useState("");
   const [skillsNotice, setSkillsNotice] = React.useState("");
   const [selectedSkill, setSelectedSkill] = React.useState(null);
@@ -91,22 +94,29 @@ function ManagerPage() {
 
   async function refreshMcp(pathOverride) {
     const requestedPath = typeof pathOverride === "string" ? pathOverride : mcpPath;
+    const requestId = ++mcpRequest.current;
+    setLoadedPath(null);
+    setServerFormOpen(false);
+    setRemoveServerName("");
     setMcpBusy(true);
     setMcpError("");
     setMcpNotice("");
     try {
       const query = requestedPath.trim() ? { configPath: requestedPath } : {};
       const result = await callHost("mcp.catalog", query);
-      const nextEntries = Array.isArray(result && result.entries) ? result.entries : [];
+      if (requestId !== mcpRequest.current) return;
+      if (!isRecord(result) || !Array.isArray(result.entries) || typeof result.configPath !== "string") throw new Error("MCP 配置目录返回格式无效。");
+      const nextEntries = result.entries;
       setMcpEntries(nextEntries);
-      setMcpPath((current) => current.trim() ? current : (result && result.configPath || ""));
+      setLoadedPath(result.configPath);
+      setMcpPath((current) => current.trim() === requestedPath.trim() ? result.configPath : current);
       setEntryId((current) => nextEntries.some((row) => row.entry && row.entry.id === current)
         ? current
         : nextEntries[0] && nextEntries[0].entry && nextEntries[0].entry.id || "");
     } catch (error) {
-      setMcpError(errorText(error));
+      if (requestId === mcpRequest.current) setMcpError(errorText(error));
     } finally {
-      setMcpBusy(false);
+      if (requestId === mcpRequest.current) setMcpBusy(false);
     }
   }
 
@@ -115,7 +125,9 @@ function ManagerPage() {
     setSkillsError("");
     try {
       const result = await callHost("skills.list", {});
-      setSkills(Array.isArray(result && result.skills) ? result.skills : []);
+      if (!isRecord(result) || !Array.isArray(result.skills)) throw new Error("Skill 目录返回格式无效。");
+      setSkills(result.skills);
+      setSkillsComplete(result.complete !== false);
     } catch (error) {
       setSkillsError(errorText(error));
     } finally {
@@ -140,9 +152,14 @@ function ManagerPage() {
 
   const selectedEntry = mcpEntries.find((row) => row.entry && row.entry.id === entryId) || mcpEntries[0] || null;
   const serverRows = selectedEntry && isRecord(selectedEntry.servers) ? Object.entries(selectedEntry.servers) : [];
+  const pathDirty = loadedPath === null || mcpPath.trim() !== loadedPath;
 
   async function saveServer(event) {
     event.preventDefault();
+    if (mcpBusy || pathDirty || !loadedPath) {
+      setMcpError("映射路径尚未成功读取，请先读取当前路径。");
+      return;
+    }
     setMcpError("");
     setMcpNotice("");
     let definition;
@@ -163,7 +180,7 @@ function ManagerPage() {
     setMcpBusy(true);
     try {
       const args = { entryId: selectedEntry.entry.id, name: serverName.trim(), definition };
-      if (mcpPath.trim()) args.configPath = mcpPath.trim();
+      args.configPath = loadedPath;
       await callHost("mcp.upsert", args);
       setMcpNotice("Server 定义已提交给 DSH 配置编辑器。");
       setServerFormOpen(false);
@@ -179,12 +196,16 @@ function ManagerPage() {
 
   async function removeServer(name) {
     if (!selectedEntry || !selectedEntry.entry) return;
+    if (mcpBusy || pathDirty || !loadedPath) {
+      setMcpError("映射路径尚未成功读取，请先读取当前路径。");
+      return;
+    }
     setMcpError("");
     setMcpNotice("");
     setMcpBusy(true);
     try {
       const args = { entryId: selectedEntry.entry.id, name };
-      if (mcpPath.trim()) args.configPath = mcpPath.trim();
+      args.configPath = loadedPath;
       const result = await callHost("mcp.remove", args);
       setMcpNotice(result && result.inheritedRemains
         ? "当前条目的覆盖定义已移除；继承配置中的同名 server 仍然生效。"
@@ -245,23 +266,33 @@ function ManagerPage() {
   function renderMcp() {
     return h("section", { className: "dsh-msm-panel" },
       h("div", { className: "dsh-msm-row" },
-        h(Field, { label: "MCP 配置路径", hint: "例如 mcp.servers；留空时使用插件配置里的默认路径。" },
+        h(Field, { label: "MCP 映射路径", hint: "填写已存在的自定义 server 映射路径；DSH 原生 MCP 插件条目请在插件管理器查看。" },
           h("input", {
             className: "dsh-msm-input",
             value: mcpPath,
-            onChange: (event) => setMcpPath(event.currentTarget.value),
+            onChange: (event) => {
+              setMcpPath(event.currentTarget.value);
+              setServerFormOpen(false);
+              setRemoveServerName("");
+              setMcpError("");
+            },
             placeholder: "mcp.servers",
           })),
         h("button", { className: "dsh-msm-button", type: "button", disabled: mcpBusy, onClick: () => void refreshMcp(mcpPath) }, mcpBusy ? "读取中…" : "读取配置")),
-      h("div", { className: "dsh-msm-muted" }, "新增或更新时请提供完整 JSON；已有定义不会回填，避免凭据出现在页面中。JSON 写入所选条目的 override；同名 inherited 字段会按 DSH 的递归合并规则继续生效。若要移除继承字段，请编辑其来源条目。"),
+      h("div", { className: "dsh-msm-muted" }, "新增或更新时请提供完整 JSON；提交会替换选中 server 的当前定义，省略的字段不会自动保留。已有定义只显示脱敏摘要。此列表仅覆盖指定路径，不代表整个 Profile 的 MCP 清单。"),
       mcpError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, mcpError) : null,
       mcpNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, mcpNotice) : null,
+      pathDirty && !mcpBusy ? h("div", { className: "dsh-msm-notice", role: "status" }, "映射路径尚未成功读取；请先读取当前路径，再编辑或移除 server。") : null,
       h(Field, { label: "配置条目" },
         h("select", {
           className: "dsh-msm-select",
           value: selectedEntry && selectedEntry.entry ? selectedEntry.entry.id : "",
-          onChange: (event) => setEntryId(event.currentTarget.value),
-          disabled: !mcpEntries.length,
+          onChange: (event) => {
+            setEntryId(event.currentTarget.value);
+            setServerFormOpen(false);
+            setRemoveServerName("");
+          },
+          disabled: !mcpEntries.length || mcpBusy,
         }, mcpEntries.length
           ? mcpEntries.map((row) => {
             const entry = row.entry || {};
@@ -277,28 +308,30 @@ function ManagerPage() {
               h("button", {
                 className: "dsh-msm-button",
                 type: "button",
-                disabled: mcpBusy,
+                disabled: mcpBusy || pathDirty,
                 onClick: () => {
                   setServerName(name);
                   setDefinitionText("");
                   setServerFormOpen(true);
-                  setMcpNotice("当前配置只显示脱敏摘要；编辑会写入 override，inherited 字段仍按 DSH 的递归合并规则生效。");
+                  setMcpNotice("当前配置只显示脱敏摘要；请提供完整 server 定义，提交会替换该 server，省略字段不会自动保留。");
                 },
               }, "编辑 override"),
               removeServerName === name
                 ? h(React.Fragment, null,
-                  h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy, onClick: () => void removeServer(name) }, "确认移除"),
+                  h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || pathDirty, onClick: () => void removeServer(name) }, "确认移除"),
                   h("button", { className: "dsh-msm-button", type: "button", onClick: () => setRemoveServerName("") }, "取消"))
-                : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy, onClick: () => setRemoveServerName(name) }, "移除"))),
+                : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: mcpBusy || pathDirty, onClick: () => setRemoveServerName(name) }, "移除"))),
           h("pre", { className: "dsh-msm-pre" }, JSON.stringify(summary, null, 2)))))
-        : h("div", { className: "dsh-msm-empty" }, mcpPath.trim()
-          ? "此配置条目下还没有 MCP server。"
-          : "请填写 MCP 配置路径，再读取配置。"),
+        : h("div", { className: "dsh-msm-empty" }, mcpBusy
+          ? "正在读取配置目录…"
+          : mcpError ? "配置目录读取失败；不能据此判断 server 数量。"
+          : mcpPath.trim() ? "此配置条目的指定映射路径下没有 server。"
+          : "请填写实际的 MCP 映射路径，再读取配置。"),
       h("div", { className: "dsh-msm-actions" },
         h("button", {
           className: "dsh-msm-button",
           type: "button",
-          disabled: !selectedEntry || mcpBusy,
+          disabled: !selectedEntry || !loadedPath || pathDirty || mcpBusy,
           onClick: () => {
             setServerName("");
             setDefinitionText("");
@@ -309,10 +342,10 @@ function ManagerPage() {
       serverFormOpen ? h("form", { className: "dsh-msm-form", onSubmit: saveServer },
         h(Field, { label: "Server 名称" },
           h("input", { className: "dsh-msm-input", value: serverName, onChange: (event) => setServerName(event.currentTarget.value), required: true })),
-        h(Field, { label: "JSON 定义", hint: "新增或更新会写入当前条目的 override；同名 inherited 字段可能继续生效。" },
+        h(Field, { label: "JSON 定义", hint: "提交完整 server 对象；该 server 的省略字段不会自动保留。" },
           h("textarea", { className: "dsh-msm-textarea", value: definitionText, onChange: (event) => setDefinitionText(event.currentTarget.value), required: true, spellCheck: false, placeholder: '{\n  "command": "...",\n  "args": []\n}' })),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: mcpBusy }, mcpBusy ? "保存中…" : "保存 server")))
+          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: mcpBusy || pathDirty }, mcpBusy ? "保存中…" : "保存 server")))
         : null);
   }
 
@@ -321,7 +354,8 @@ function ManagerPage() {
       h("div", { className: "dsh-msm-actions" },
         h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void refreshSkills() }, skillsBusy ? "读取中…" : "刷新 Skills"),
         h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy, onClick: () => setSkillFormOpen((open) => !open) }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
-      h("div", { className: "dsh-msm-muted" }, "注册的 Runtime Skill 仅在此插件生命周期内有效；持久化 Skill 文件不会由此页面修改。"),
+      h("div", { className: "dsh-msm-muted" }, "此页显示 Profile 全局 Skill 目录，不含 Agent 专属层。Agent 调用管理工具时使用其自身作用域和工作目录。Runtime Skill 仅在此插件生命周期内有效，持久化文件不由此页修改。"),
+      !skillsBusy && !skillsComplete && !skillsError ? h("div", { className: "dsh-msm-notice", role: "status" }, "Skill 发现尚未完成，当前结果不能作为完整目录。") : null,
       skillsError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, skillsError) : null,
       skillsNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, skillsNotice) : null,
       skillFormOpen ? h("form", { className: "dsh-msm-form", onSubmit: registerSkill },
@@ -351,7 +385,10 @@ function ManagerPage() {
                     h("button", { className: "dsh-msm-button", type: "button", onClick: () => setUnregisterName("") }, "取消"))
                   : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy, onClick: () => setUnregisterName(skill.name) }, "注销")
                 : null)))))
-        : h("div", { className: "dsh-msm-empty" }, skillsBusy ? "正在读取 Skill 目录…" : "当前没有可见 Skill。"),
+        : h("div", { className: "dsh-msm-empty" }, skillsBusy ? "正在读取 Skill 目录…"
+          : skillsError ? "Skill 目录读取失败；不能据此判断 Skill 数量。"
+          : !skillsComplete ? "Skill 发现尚未完成。"
+          : "当前 Profile 全局目录没有可见 Skill。"),
       selectedSkill ? h("article", { className: "dsh-msm-card" },
         h("div", { className: "dsh-msm-card-header" },
           h("h3", { className: "dsh-msm-card-title" }, `Skill 正文：${selectedSkill.name}`),
@@ -364,7 +401,7 @@ function ManagerPage() {
       h("div", null,
         h("h1", { className: "dsh-msm-title" }, "MCP 与 Skill 管理"),
         h("p", { className: "dsh-msm-subtitle" }, "管理当前 Profile 的 MCP 配置条目和运行期 Skill。"))),
-    h("nav", { className: "dsh-msm-tabs", "aria-label": "管理类型" },
+    h("nav", { className: "dsh-msm-tabs", role: "tablist", "aria-label": "管理类型" },
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "mcp", onClick: () => setTab("mcp") }, "MCP Servers"),
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "skills", onClick: () => setTab("skills") }, "Skills")),
     tab === "mcp" ? renderMcp() : renderSkills());

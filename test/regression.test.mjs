@@ -65,6 +65,7 @@ function writeReport() {
   writeFileSync(resolve(root, 'results.json'), JSON.stringify({
     packageVersion: JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8')).version,
     nodeVersion: process.version,
+    fixtureRuntimeVersion: JSON.parse(readFileSync(resolve(root, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8')).version,
     sourceSha256: hashes,
     framework: { cordis: '4.0.4', react: '18.3.1', renderer: 'react-test-renderer' },
     isolation: 'In-process fixtures only; no active DSH API, Profile, window, process control, or network requests',
@@ -482,12 +483,14 @@ await check('Incomplete Skill discovery is displayed as incomplete, not confirme
   assert.equal(ui.content().includes('当前 Profile 全局目录没有可见 Skill'), false);
 });
 
-await check('DSH peer range accepts the verified baseline and rejects an older incompatible minor', async () => {
+await check('Both optional DSH peers accept verified baselines with default semver prerelease rules', async () => {
   const manifest = JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8'));
-  const range = manifest.peerDependencies['@deepseek-ai/dsh'];
-  assert.equal(semver.satisfies('0.2.0-rc.2', range, { includePrerelease: true }), true);
-  assert.equal(semver.satisfies('0.1.9', range, { includePrerelease: true }), false);
-  assert.equal(manifest.peerDependenciesMeta['@deepseek-ai/dsh'].optional, true);
+  for (const name of ['@deepseek-ai/dsh', '@deepseek-ai/dsh-mcp-client']) {
+    const range = manifest.peerDependencies[name];
+    for (const version of ['0.2.0-rc.2', '0.2.1-rc.2', '0.2.1-rc.3']) assert.equal(semver.satisfies(version, range), true, `${name}: ${version}`);
+    assert.equal(semver.satisfies('0.1.9', range), false);
+    assert.equal(manifest.peerDependenciesMeta[name].optional, true);
+  }
 });
 
 export { check, fixture, page, writeReport, tick, clone };

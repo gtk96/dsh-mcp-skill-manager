@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-export const testedRuntimeVersions = Object.freeze(['0.2.0-rc.2']);
+export const testedRuntimeVersions = Object.freeze(['0.2.0-rc.2', '0.2.1-rc.2']);
 
 export class CompatibilityError extends Error {}
 

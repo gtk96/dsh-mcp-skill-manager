@@ -4,6 +4,7 @@ import './session-discovery.test.mjs';
 import { check, fixture, page, tick, writeReport } from './regression.test.mjs';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
 import runtimeFixture from '@deepseek-ai/dsh/package.json' with { type: 'json' };
+const baselineRuntimeVersion = runtimeFixture.version;
 
 function runtimeVersion(t, version) {
   const previous = runtimeFixture.version;
@@ -15,6 +16,8 @@ const mutations = [
   ['mcp.remove', { entryId: 'include:fixture', configPath: 'maps.A', name: 'demo' }],
   ['skills.register', { name: 'probe-skill', description: 'Fixture', content: 'Fixture body' }],
   ['skills.unregister', { name: 'probe-skill' }],
+  ['mcp.add', { sessionId: '', serverName: 'blocked-probe', definition: { transport: 'stdio', command: 'fixture-command' } }],
+  ['mcp.retry', { sessionId: '', serverName: 'blocked-probe' }],
 ];
 const localSkill = { name: 'fixture-skill', description: 'Fixture description', content: 'Fixture readable body', source: 'custom', provider: 'fixture-provider' };
 
@@ -22,8 +25,8 @@ await check('Compatibility reports version and methods without invoking business
   const host = await fixture(); t.after(() => host.close());
   const result = await host.rpc('compatibility.status');
   assert.equal(result.ok, true);
-  assert.equal(result.value.runtimeVersion, '0.2.0-rc.2');
-  assert.equal(result.value.pluginVersion, '0.5.0');
+  assert.equal(result.value.runtimeVersion, baselineRuntimeVersion);
+  assert.equal(result.value.pluginVersion, '0.5.1');
   assert.equal(result.value.versionStatus, 'tested');
   assert.deepEqual(result.value.writes, { mcp: true, skills: true });
   assert.equal(result.value.capabilities.sessionSelection, false);
@@ -31,7 +34,26 @@ await check('Compatibility reports version and methods without invoking business
   assert.equal(host.trace.edits + host.trace.registrations + host.trace.snapshots.length, 0);
 });
 
-for (const version of ['0.2.1-alpha.4', '1.0.0', undefined, 'not-a-version']) {
+for (const version of ['0.2.0-rc.2', '0.2.1-rc.2']) {
+  await check(`Verified runtime ${version} permits managed MCP and Runtime Skill operations`, async (t) => {
+    runtimeVersion(t, version);
+    const host = await fixture({ managed: true }); t.after(() => host.close());
+    const status = (await host.rpc('compatibility.status')).value;
+    assert.equal(status.runtimeVersion, version);
+    assert.equal(status.versionStatus, 'tested');
+    assert.deepEqual(status.writes, { mcp: true, skills: true });
+    const added = await host.rpc('mcp.add', { sessionId: '', serverName: 'baseline-probe', definition: { transport: 'stdio', command: 'fixture-command', args: [] } });
+    assert.equal(added.ok, true);
+    assert.equal(host.trace.edits, 1);
+    const registered = await host.rpc('skills.register', { sessionId: '', name: 'baseline-skill', description: 'Fixture', content: 'Fixture body' });
+    assert.equal(registered.ok, true);
+    assert.equal((await host.rpc('skills.unregister', { sessionId: '', name: 'baseline-skill' })).ok, true);
+    const ui = await page(t, host);
+    assert.equal(ui.button('新增 MCP').props.disabled, false);
+  });
+}
+
+for (const version of ['0.2.1-alpha.4', '0.2.1-rc.3', '1.0.0', undefined, 'not-a-version']) {
   await check(`Runtime ${version ?? 'unknown'} is read-only at RPC and Tool boundaries`, async (t) => {
     runtimeVersion(t, version);
     const host = await fixture({ skillRows: { profile: [localSkill] } }); t.after(() => host.close());

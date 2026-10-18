@@ -1,6 +1,10 @@
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { testedRuntimeVersions } from '../compatibility.js';
+
+const runtimeVersion = process.env.DSH_TEST_RUNTIME_VERSION || testedRuntimeVersions[0];
+if (!testedRuntimeVersions.includes(runtimeVersion)) throw new Error(`DSH_TEST_RUNTIME_VERSION must be one of: ${testedRuntimeVersions.join(', ')}`);
 
 const testRoot = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(testRoot, '..');
@@ -15,7 +19,7 @@ for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compat
 const runtimeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh');
 mkdirSync(runtimeFixture, { recursive: true });
 writeFileSync(resolve(runtimeFixture, 'package.json'), JSON.stringify({
-  name: '@deepseek-ai/dsh', version: '0.2.0-rc.2', type: 'module',
+  name: '@deepseek-ai/dsh', version: runtimeVersion, type: 'module',
   exports: { './package.json': './package.json' },
 }) + '\n');
 const bridgeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh-mcp-client');

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
@@ -77,9 +77,14 @@ function entrySummary(entry) {
   };
 }
 
-function redactServer(server) {
-  if (!isRecord(server)) return { type: Array.isArray(server) ? 'array' : typeof server };
+function serverRevision(key, entryId, parts, serverName, present, value) {
+  return createHmac('sha256', key).update(JSON.stringify([entryId, parts.join('.'), serverName, present, value])).digest('hex');
+}
+
+function redactServer(server, revision) {
+  if (!isRecord(server)) return { type: Array.isArray(server) ? 'array' : typeof server, revision };
   return {
+    revision,
     fields: Object.keys(server),
     values: Object.fromEntries(
       Object.entries(server)
@@ -89,7 +94,7 @@ function redactServer(server) {
   };
 }
 
-function readMcpCatalog(ctx, config, request) {
+function readMcpCatalog(ctx, config, request, revisionKey) {
   const requestedPath = typeof request.configPath === 'string' && request.configPath.trim()
     ? request.configPath
     : config.mcpConfigPath;
@@ -102,7 +107,7 @@ function readMcpCatalog(ctx, config, request) {
     return {
       entry: entrySummary(row.entry),
       servers: isRecord(servers)
-        ? Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)]))
+        ? Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))]))
         : {},
     };
   });
@@ -170,9 +175,13 @@ function isSkillName(value) {
   return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 }
 
-function requireString(value, label) {
+function requireNonBlank(value, label) {
   if (typeof value !== 'string' || !value.trim()) throw new ManagerError(`${label} is required`);
-  return value.trim();
+  return value;
+}
+
+function requireString(value, label) {
+  return requireNonBlank(value, label).trim();
 }
 
 function skillLookup(exec) {
@@ -184,6 +193,7 @@ function skillLookup(exec) {
 }
 
 export function apply(ctx, config = {}) {
+  const revisionKey = randomBytes(32);
   const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx, discovery.serviceFor);
   const managedMcp = createManagedMcp(ctx, config, compatibility);
@@ -194,6 +204,8 @@ export function apply(ctx, config = {}) {
   };
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
+  const pendingUnregister = new Set();
+  let active = true;
   const runtimeProvider = `${name}:${randomUUID()}`;
   const mcpTool = tool(
     'dsh_manage_mcp_servers',
@@ -204,6 +216,7 @@ export function apply(ctx, config = {}) {
       configPath: { type: 'string', description: 'Dot path to the MCP server map, for example the path configured for this plugin.' },
       name: { type: 'string', description: 'MCP server key for upsert or remove.' },
       definition: { type: 'object', additionalProperties: true, description: 'MCP server configuration object for upsert.' },
+      expectedRevision: { type: 'string', description: 'For replacing or removing an existing Server, pass its revision from list; save rejects a definition changed since that read.' },
     },
     async (args, exec) => {
       exec.signal.throwIfAborted();
@@ -226,7 +239,7 @@ export function apply(ctx, config = {}) {
             if (!isRecord(servers)) return undefined;
             return {
               entry: entrySummary(row.entry),
-              servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value)])),
+              servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))])),
             };
           }).filter(Boolean),
         };
@@ -262,6 +275,18 @@ export function apply(ctx, config = {}) {
       await ctx.configEditor.edit(row.entry, (current, inherited) => {
         exec.signal.throwIfAborted();
         if (action === 'upsert') {
+          const currentServers = getAt(current, parts);
+          const inheritedMap = getAt(inherited, parts);
+          const hasOverride = isRecord(currentServers) && Object.hasOwn(currentServers, serverName);
+          const hasInherited = isRecord(inheritedMap) && Object.hasOwn(inheritedMap, serverName);
+          const exists = hasOverride || hasInherited;
+          if (exists) {
+            const value = hasOverride ? currentServers[serverName] : inheritedMap[serverName];
+            const revision = serverRevision(revisionKey, row.entry.id, parts, serverName, true, value);
+            if (args.expectedRevision !== revision) throw new ManagerError(`Server ${serverName} changed or lacks a revision; refresh the catalog before replacing it`);
+          } else if (args.expectedRevision !== undefined) {
+            throw new ManagerError(`Server ${serverName} changed or was removed; refresh the catalog before replacing it`);
+          }
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
             servers[serverName] = args.definition;
             return servers;
@@ -269,6 +294,14 @@ export function apply(ctx, config = {}) {
         }
         if (action === 'remove') {
           const inheritedMap = getAt(inherited, parts);
+          const currentServers = getAt(current, parts);
+          if (!isRecord(currentServers) || !Object.hasOwn(currentServers, serverName)) {
+            throw new ManagerError(`Server ${serverName} changed or was removed; refresh the catalog before removing it`);
+          }
+          const revision = serverRevision(revisionKey, row.entry.id, parts, serverName, true, currentServers[serverName]);
+          if (args.expectedRevision !== revision) {
+            throw new ManagerError(`Server ${serverName} changed or lacks a revision; refresh the catalog before removing it`);
+          }
           inheritedRemains = isRecord(inheritedMap) && Object.hasOwn(inheritedMap, serverName);
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
             if (inheritedRemains) servers[serverName] = inheritedMap[serverName];
@@ -321,12 +354,13 @@ export function apply(ctx, config = {}) {
           throw new ManagerError(`Runtime skill ${skillName} is already registered by this plugin`);
         }
         const description = requireString(args.description, 'description');
-        const content = requireString(args.content, 'content');
+        const content = requireNonBlank(args.content, 'content');
         pendingSkills.add(skillName);
         let dispose;
         try {
           const existing = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
           exec.signal.throwIfAborted();
+          if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
           if (!existing.complete) throw new ManagerError('Skill discovery is incomplete; retry before registering a runtime skill');
           if (existing.skills.some((skill) => skill.name === skillName)) {
             throw new ManagerError(`Skill ${skillName} already exists in the effective DSH catalog`);
@@ -340,6 +374,7 @@ export function apply(ctx, config = {}) {
             ...(typeof args.whenToUse === 'string' && args.whenToUse.trim() ? { whenToUse: args.whenToUse.trim() } : {}),
             invocation: { modelInvocable: true, userInvocable: true },
           });
+          runtimeSkills.set(skillName, dispose);
           const observed = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
           if (!observed.complete) throw new ManagerError('Skill discovery is incomplete; runtime registration was rolled back');
           const registered = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
@@ -353,10 +388,11 @@ export function apply(ctx, config = {}) {
           ) {
             throw new ManagerError(`Skill ${skillName} did not become the effective runtime definition`);
           }
-          runtimeSkills.set(skillName, dispose);
+          if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
           return { action, name: skillName, persisted: false };
         } catch (error) {
           dispose?.();
+          if (runtimeSkills.get(skillName) === dispose) runtimeSkills.delete(skillName);
           throw error;
         } finally {
           pendingSkills.delete(skillName);
@@ -364,12 +400,23 @@ export function apply(ctx, config = {}) {
       }
       if (action === 'unregister') {
         if (pendingSkills.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being registered`);
+        if (pendingUnregister.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being unregistered`);
         const dispose = runtimeSkills.get(skillName);
         if (!dispose) return { action, name: skillName, changed: false };
-        exec.signal.throwIfAborted();
-        dispose();
-        runtimeSkills.delete(skillName);
-        return { action, name: skillName, changed: true };
+        pendingUnregister.add(skillName);
+        try {
+          const effective = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
+          exec.signal.throwIfAborted();
+          if (effective?.source !== 'runtime' || effective.provider !== runtimeProvider) {
+            throw new ManagerError(`Skill ${skillName} is no longer the effective runtime definition; refresh the catalog`);
+          }
+          if (runtimeSkills.get(skillName) !== dispose) return { action, name: skillName, changed: false };
+          dispose();
+          runtimeSkills.delete(skillName);
+          return { action, name: skillName, changed: true };
+        } finally {
+          pendingUnregister.delete(skillName);
+        }
       }
       throw new ManagerError('action must be list, get, register, or unregister');
     },
@@ -410,7 +457,7 @@ export function apply(ctx, config = {}) {
           value = await discoverMcp(discovery.view(args), signal);
           break;
         case 'mcp.catalog':
-          value = readMcpCatalog(ctx, config, args);
+          value = readMcpCatalog(ctx, config, args, revisionKey);
           break;
         case 'mcp.upsert':
           value = await mcpTool.execute({ ...args, action: 'upsert' }, exec);
@@ -420,18 +467,32 @@ export function apply(ctx, config = {}) {
           break;
         case 'skills.list': {
           const result = await skillsTool.execute({ action: 'list' }, exec);
+          const counts = new Map();
+          for (const skill of result.skills) counts.set(skill.name, (counts.get(skill.name) || 0) + 1);
+          const checkedNames = [...counts].filter(([skillName, count]) => count > 1 || runtimeSkills.has(skillName)).map(([skillName]) => skillName);
+          const service = discovery.serviceFor('skills', exec.agent);
+          const effective = new Map(await Promise.all(checkedNames.map(async (skillName) => [skillName, await service.get(skillName, skillLookup(exec))])));
           discovery.assertCurrent(target, signal);
+          const selected = new Map();
+          for (const skill of result.skills) {
+            if (checkedNames.includes(skill.name)) continue;
+            if (!selected.has(skill.name)) selected.set(skill.name, skill);
+          }
+          for (const skillName of checkedNames) {
+            const skill = effective.get(skillName);
+            if (skill) selected.set(skillName, skill);
+          }
           value = {
             complete: result.complete,
             scope: result.scope,
             context: target.context,
-            skills: result.skills.map((skill) => ({
+            skills: [...selected.values()].map((skill) => ({
               name: skill.name,
               description: skill.description,
               source: skill.source,
               provider: skill.provider,
               path: typeof skill.path === 'string' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(skill.path) ? skill.path : undefined,
-              canUnregister: !target.agent && runtimeSkills.has(skill.name),
+              canUnregister: !target.agent && skill.source === 'runtime' && skill.provider === runtimeProvider && runtimeSkills.has(skill.name),
             })),
           };
           break;
@@ -493,6 +554,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(function* () {
     yield () => {
+      active = false;
       disposeMcpTool();
       disposeSkillTool();
       for (const dispose of runtimeSkills.values()) dispose();

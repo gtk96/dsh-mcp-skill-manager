@@ -4,6 +4,7 @@ import './session-discovery.test.mjs';
 import { check, fixture, page, tick, writeReport } from './regression.test.mjs';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
 import runtimeFixture from '@deepseek-ai/dsh/package.json' with { type: 'json' };
+import packageFixture from './package.json' with { type: 'json' };
 const baselineRuntimeVersion = runtimeFixture.version;
 
 function runtimeVersion(t, version) {
@@ -26,7 +27,7 @@ await check('Compatibility reports version and methods without invoking business
   const result = await host.rpc('compatibility.status');
   assert.equal(result.ok, true);
   assert.equal(result.value.runtimeVersion, baselineRuntimeVersion);
-  assert.equal(result.value.pluginVersion, '0.5.1');
+  assert.equal(result.value.pluginVersion, packageFixture.version);
   assert.equal(result.value.versionStatus, 'tested');
   assert.deepEqual(result.value.writes, { mcp: true, skills: true });
   assert.equal(result.value.capabilities.sessionSelection, false);
@@ -49,7 +50,7 @@ for (const version of ['0.2.0-rc.2', '0.2.1-rc.2']) {
     assert.equal(registered.ok, true);
     assert.equal((await host.rpc('skills.unregister', { sessionId: '', name: 'baseline-skill' })).ok, true);
     const ui = await page(t, host);
-    assert.equal(ui.button('新增 MCP').props.disabled, false);
+    assert.equal(ui.button('添加托管 MCP').props.disabled, false);
   });
 }
 
@@ -129,12 +130,11 @@ await check('An unavailable runtime reader fails closed without leaking provider
 
 await check('Page displays an unverified version and keeps catalog and body reads available', async (t) => {
   runtimeVersion(t, '0.2.1-alpha.4');
-  const host = await fixture({ skillRows: { profile: [localSkill] } }); t.after(() => host.close());
+  const host = await fixture({ managed: true, skillRows: { profile: [localSkill] } }); t.after(() => host.close());
   const ui = await page(t, host);
   assert.ok(ui.content().includes('0.2.1-alpha.4'));
   assert.ok(ui.content().includes('保持只读'));
-  assert.equal(ui.button('编辑 override').props.disabled, true);
-  assert.equal(ui.button('移除').props.disabled, true);
+  assert.equal(ui.button('添加托管 MCP').props.disabled, true);
   await ui.click('Skills');
   assert.equal(ui.button('注册 Runtime Skill').props.disabled, true);
   await ui.click('查看正文');
@@ -144,33 +144,32 @@ await check('Page displays an unverified version and keeps catalog and body read
 
 for (const value of [undefined, { protocolVersion: 9 }, { protocolVersion: 1, writes: { mcp: true, skills: true } }]) {
   await check(`Failed or malformed compatibility status ${JSON.stringify(value)} cannot enable page writes`, async (t) => {
-    const host = await fixture(); t.after(() => host.close());
+    const host = await fixture({ managed: true }); t.after(() => host.close());
     const ui = await page(t, host, (method) => method === 'compatibility.status'
       ? value === undefined ? { ok: false, error: { message: 'Fixture old Host without status endpoint' } } : { ok: true, value }
       : undefined);
     assert.ok(ui.alerts().some((message) => message.includes('写入已禁用')));
-    assert.equal(ui.button('编辑 override').props.disabled, true);
+    assert.equal(ui.button('添加托管 MCP').props.disabled, true);
     await ui.click('Skills');
     assert.equal(ui.button('注册 Runtime Skill').props.disabled, true);
     assert.equal(ui.mutations().length, 0);
   });
 }
 
-await check('A delayed old-session compatibility response cannot authorize the new view', async (t) => {
+await check('A delayed Profile compatibility response stays global after main-view projection changes', async (t) => {
   const agent = (id) => ({ id, ctx: { preset: 'fixture' }, session: { header: { id, cwd: '/fixture', agentPreset: 'fixture' } } });
-  const host = await fixture({ agents: [agent('A'), agent('B')], presets: true }); t.after(() => host.close());
+  const host = await fixture({ managed: true, agents: [agent('A'), agent('B')], presets: true }); t.after(() => host.close());
   let release;
-  const old = new Promise((done) => { release = done; });
-  const ui = await page(t, host, (method, args) => {
-    if (method !== 'compatibility.status') return undefined;
-    if (args.sessionId === 'A') return old;
-    return host.rpc(method, args).then((result) => ({ ...result, value: { ...result.value, versionStatus: 'unverified', writes: { mcp: false, skills: false } } }));
-  }, { A: { id: 'A', retainedBy: { mainView: 1 } }, B: { id: 'B' } });
-  const selector = ui.renderer.root.findByProps({ 'aria-label': '能力视图' });
-  await act(async () => { selector.props.onChange({ currentTarget: { value: 'B' } }); await tick(); });
-  assert.ok(ui.content().includes('保持只读'));
-  await act(async () => { release(await host.rpc('compatibility.status', { sessionId: 'A' })); await tick(); });
-  assert.ok(ui.content().includes('保持只读'));
+  const gate = new Promise((done) => { release = done; });
+  const ui = await page(t, host, (method) => method === 'compatibility.status' ? gate : undefined,
+    { A: { id: 'A', retainedBy: { mainView: 1 } }, B: { id: 'B' } });
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '能力视图' }).length, 0);
+  assert.equal(ui.button('添加托管 MCP').props.disabled, true);
+  await ui.setSessionRows({ A: { id: 'A' }, B: { id: 'B', retainedBy: { mainView: 1 } } });
+  assert.equal(ui.requests.filter((row) => row.method === 'compatibility.status').length, 1);
+  await act(async () => { release(await host.rpc('compatibility.status')); await tick(); });
+  assert.equal(ui.button('添加托管 MCP').props.disabled, false);
+  assert.equal(ui.requests.filter((row) => row.method === 'compatibility.status').every((row) => !row.args.sessionId), true);
   assert.equal(ui.mutations().length, 0);
 });
 
@@ -197,11 +196,11 @@ await check('A version change after successful status cannot reuse its write aut
 });
 
 await check('Contradictory unverified status with write flags cannot enable Client writes', async (t) => {
-  const host = await fixture(); t.after(() => host.close());
+  const host = await fixture({ managed: true }); t.after(() => host.close());
   const ui = await page(t, host, (method, args) => method === 'compatibility.status'
     ? host.rpc(method, args).then((result) => ({ ...result, value: { ...result.value, versionStatus: 'unverified' } }))
     : undefined);
-  assert.equal(ui.button('编辑 override').props.disabled, true);
+  assert.equal(ui.button('添加托管 MCP').props.disabled, true);
   await ui.click('Skills');
   assert.equal(ui.button('注册 Runtime Skill').props.disabled, true);
   assert.equal(ui.mutations().length, 0);

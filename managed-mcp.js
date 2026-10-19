@@ -52,21 +52,44 @@ function bridgeConfig(serverName, definition) {
     return [target, value];
   }));
   return definition.transport === 'stdio'
-    ? { serverName, transport: 'stdio', command: definition.command, args: definition.args, ...(definition.cwd ? { cwd: definition.cwd } : {}), env: resolveRefs(definition.envFromEnv), failOnStartupError: false }
-    : { serverName, transport: 'streamable-http', url: definition.url, headers: resolveRefs(definition.headersFromEnv), failOnStartupError: false };
+    ? { serverName, transport: 'stdio', command: definition.command, args: definition.args, ...(definition.cwd ? { cwd: definition.cwd } : {}), env: resolveRefs(definition.envFromEnv), failOnStartupError: true }
+    : { serverName, transport: 'streamable-http', url: definition.url, headers: resolveRefs(definition.headersFromEnv), failOnStartupError: true };
 }
 
 /** Own only this plugin's declared connections; native MCP keeps transport and tool lifecycles. */
-export function createManagedMcp(ctx, config, compatibility, readBridge = () => import('@deepseek-ai/dsh-mcp-client')) {
+export function createManagedMcp(ctx, config, compatibility, readBridge = () => import('@deepseek-ai/dsh-mcp-client'), options = {}) {
+  const startupTimeoutMs = options.startupTimeoutMs ?? 30_000;
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
+  const bounded = (work, ms, message, onTimeout) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { onTimeout?.(); reject(new ManagedMcpError(message)); }, ms);
+    Promise.resolve(work).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
   const connections = new Map();
   let alive = true;
   let queue = Promise.resolve();
   let bridgePromise;
   const definitions = () => config.managedServers.get();
-  const loadBridge = () => bridgePromise ??= Promise.resolve().then(readBridge).then((bridge) => {
-    if (typeof bridge.apply !== 'function') throw new Error('unsupported bridge');
-    return bridge;
-  }).catch(() => { bridgePromise = undefined; throw new ManagedMcpError('官方 MCP 桥接器不可用；请检查 DSH 的 MCP Client 模块。'); });
+  const loadBridge = () => {
+    if (bridgePromise) return bridgePromise;
+    const pending = Promise.resolve().then(readBridge).then((bridge) => {
+      if (typeof bridge.apply !== 'function') throw new Error('unsupported bridge');
+      return bridge;
+    }).catch(() => {
+      if (bridgePromise === pending) bridgePromise = undefined;
+      throw new ManagedMcpError('官方 MCP 桥接器不可用；请检查 DSH 的 MCP Client 模块。');
+    });
+    bridgePromise = pending;
+    return pending;
+  };
+  const boundedBridge = () => {
+    const pending = loadBridge();
+    return bounded(pending, startupTimeoutMs, '官方 MCP 桥接器加载超时，请重试。', () => {
+      if (bridgePromise === pending) bridgePromise = undefined;
+    });
+  };
   const owner = () => {
     const rows = ctx.configEditor.configuration().filter(({ entry }) => entry.fiber === ctx.fiber
       || (ctx.fiber.entry && entry === ctx.fiber.entry));
@@ -81,14 +104,25 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
   }
   async function dispose(connection) {
     if (!connection.fiber) return;
-    let failed = false;
-    try { await connection.fiber.dispose(); } catch { failed = true; }
-    try { await connection.fiber.await(); } catch { failed = true; }
-    if (failed) throw new ManagedMcpError('旧 MCP 连接未能完全释放；请重试清理，不会创建同名替代实例。');
+    if (!connection.disposal) {
+      const pending = (async () => {
+        let failed = false;
+        try { await connection.fiber.dispose(); } catch { failed = true; }
+        // Cordis await() keeps the startup error after a failed fiber is disposed.
+        if (connection.fiber.state !== 4) {
+          try { await connection.fiber.await(); } catch { failed = true; }
+        }
+        if (failed) throw new ManagedMcpError('旧 MCP 连接未能完全释放；请重试清理，不会创建同名替代实例。');
+      })();
+      connection.disposal = pending;
+      void pending.catch(() => { if (connection.disposal === pending) connection.disposal = undefined; });
+    }
+    await bounded(connection.disposal, cleanupTimeoutMs, '旧 MCP 连接清理超时；请重试清理，不会创建同名替代实例。');
   }
   async function reconcile() {
     if (!alive) return;
     const desired = definitions();
+    let bridgeAttempt;
     for (const [name, connection] of connections) {
       if (own(desired, name) && isDeepStrictEqual(connection.raw, desired[name]) && connection.phase !== 'cleanup-failed') continue;
       try {
@@ -103,11 +137,12 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
       if (!alive) return;
       if (connections.has(serverName)) continue;
       const connection = { raw: structuredClone(raw), transport: raw?.transport, fiber: null, phase: 'loading' };
+      let startupTimedOut = false;
       connections.set(serverName, connection);
       try {
         const definition = normalizeServer(serverName, raw);
         const actual = bridgeConfig(serverName, definition);
-        const bridge = await loadBridge();
+        const bridge = await (bridgeAttempt ??= boundedBridge());
         if (!alive) return;
         const latest = definitions();
         if (!own(latest, serverName) || !isDeepStrictEqual(latest[serverName], raw)) {
@@ -115,10 +150,30 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
           continue;
         }
         // A distinct owner contains each bridge instance and its failures.
-        connection.fiber = ctx.plugin({ name: `managed-mcp-${serverName}`, apply: (child) => { child.plugin(bridge, actual); } });
+        let bridgeFiber;
+        connection.fiber = ctx.plugin({ name: `managed-mcp-${serverName}`, apply(child) {
+          bridgeFiber = child.plugin(bridge, actual);
+        } });
+        await bounded((async () => {
+          await connection.fiber.await();
+          await bridgeFiber.await();
+        })(), startupTimeoutMs, '本地 MCP 启动超时，请检查桥接器后重试加载。', () => { startupTimedOut = true; });
+        const current = definitions();
+        if (!alive || !own(current, serverName) || !isDeepStrictEqual(current[serverName], raw)) {
+          try {
+            await dispose(connection);
+            connections.delete(serverName);
+          } catch (error) {
+            connection.phase = 'cleanup-failed';
+            connection.error = error.message;
+          }
+        }
       } catch (error) {
         connection.phase = 'failed';
         connection.error = error instanceof ManagedMcpError ? error.message : '本地 MCP 加载失败，请检查官方桥接器。';
+        if (connection.fiber && startupTimedOut) {
+          void dispose(connection).catch(() => {});
+        }
       }
     }
   }
@@ -147,7 +202,7 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
     assertUnique(args.serverName, definitions());
     // Check references and bridge availability before persisting; resolved values are never stored.
     bridgeConfig(args.serverName, definition);
-    await loadBridge();
+    await boundedBridge();
     signal.throwIfAborted();
     await ctx.configEditor.edit(entry, (current) => {
       signal.throwIfAborted();

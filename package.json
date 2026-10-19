@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-skill-manager",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "DeepSeek Harness plugin for MCP configuration and runtime skill management",
   "type": "module",
   "main": "./index.js",
@@ -8,7 +8,9 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "license": "MIT",
   "files": [
@@ -19,7 +21,9 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
   ],
   "dsh": {
     "bundle": {

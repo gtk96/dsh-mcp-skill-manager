@@ -1,6 +1,6 @@
 # DSH MCP & Skill Manager
 
-用于 DeepSeek Harness（DSH）的会话能力发现、MCP 配置来源查看和 Runtime Skill 管理插件。
+用于 DeepSeek Harness（DSH）的 MCP Server 配置来源查看、唯一归属工具分组和 Runtime Skill 管理插件。
 
 ## 安装
 
@@ -34,23 +34,19 @@ https://codeload.github.com/gtk96/dsh-mcp-skill-manager/tar.gz/refs/heads/main
 | 未验证或未知版本 | 尝试保留目录与正文读取，禁止 MCP 配置写入和 Runtime Skill 注册/注销 |
 | 已测版本缺少接口 | 仅禁用依赖该接口的写操作；读取失败仍显示错误，不把失败当成空目录 |
 
-页面检查失败、协议不匹配、检查进行中或切换会话时，写入保持禁用。Host 对每次配置修改和 Runtime Skill 操作重新检查版本及接口；直接调用 Tool 或 RPC 也不能绕过。兼容检查不会覆盖 Skill 注册时已有的完整目录及回滚校验。插件退出时释放自身 Runtime Skill 不受手动写入闸门阻碍。
+页面检查失败、协议不匹配或检查进行中时，写入保持禁用。Host 对每次配置修改和 Runtime Skill 操作重新检查版本及接口；直接调用 Tool 或 RPC 也不能绕过。兼容检查不会覆盖 Skill 注册时已有的完整目录及回滚校验。插件退出时释放自身 Runtime Skill 不受手动写入闸门阻碍。
 
 Host 的基础启动仍要求 `configEditor`、`skills`、`tools` 服务以及工具注册契约存在；若它们无法满足，DSH Loader 可能无法启动插件，管理页不能代替启动错误诊断。Client 的 Settings/连接基础契约同样必须存在。
 
 官方发布新版本后，维护者需核对公开契约，执行隔离回归、安装包检查及目标版本的真实页面/配置写入验收，再更新已测试版本列表。官方 `0.2.1-alpha.4` 在回归中仅用于验证“未验证版本禁止写入”，没有作为运行环境启动或认证为兼容。只放宽 peer 范围或接口形状检查通过不能替代这些验收。插件不修改官方内部文件，不触发应用升级或重启，也不提供绕过只读闸门的开关。
 
-## 选择会话
+## 页面范围
 
-Settings 的 **MCP & Skills** 页面提供“能力视图”选择器。初始值为 Settings 打开时主视图中的会话；也可选择其他会话或 Profile 全局视图。
-
-会话目录只读取 id、工作目录、预设身份和是否具有 live Agent，不读取对话消息。目标会话需有 live Agent；未加载或已退出的会话返回明确错误，不用全局目录替代，也不在后台创建或恢复 Agent。
-
-Skill 查询使用所选 Agent 的作用域、会话工作目录及其预设中的 Skill 服务。列表和正文使用相同上下文；会话切换会失效旧请求、清空旧正文及编辑确认。迟到响应与上下文不匹配的响应不能覆盖当前视图。读取过程中 Agent 被替换、卸载或切换预设时，返回错误并要求刷新。
+Settings 的 **MCP & Skills** 页面直接读取和管理 Profile 全局配置、工具分组与 Skill。Agent 调用管理工具时，发现类操作仍按调用方 Agent 的作用域读取；目标会话若没有 live Agent，会返回明确错误，不创建或恢复 Agent。配置写入与 Runtime Skill 注册/注销只允许 Profile 全局范围。
 
 ## 手动添加 MCP
 
-MCP 主页面提供 **新增 MCP**，无需填写自定义映射路径。先选择 **Profile 全局视图**，等待兼容检查完成，再填写 Server 名称和传输方式：
+MCP 主页面提供 **添加托管 MCP**。等待兼容检查完成，再填写 Server 名称和传输方式：
 
 - **stdio**：启动命令、JSON 字符串数组参数、可选工作目录、进程环境变量引用。
 - **streamable-http**：HTTP/HTTPS MCP 地址、请求头环境变量引用。地址不接受用户名、密码、查询参数或片段，认证使用请求头环境变量引用。
@@ -59,45 +55,40 @@ MCP 主页面提供 **新增 MCP**，无需填写自定义映射路径。先选�
 
 引用字段只保存环境变量名，例如 `{"API_KEY":"MY_MCP_API_KEY"}`，或请求头的 `{"Authorization":"MY_MCP_AUTH_HEADER"}`。对应变量必须已存在于运行 DSH 的进程环境中；请求头变量应包含完整头值。原值仅在内存中解析后交给官方桥接器，不写入本插件配置，不返回管理目录。不要在命令、参数或 URL 中填写凭据。缺少引用变量、定义无效或桥接器不可用时，新增在保存前失败。
 
-配置通过 `configEditor.edit()` 保存在**当前管理插件条目**的 `managedServers` 字段，不生成独立的 Profile 原生 MCP 条目。该字段声明为官方支持的 volatile 实时字段；Loader 更新引用后发出 `loader/volatile-update`，插件按定义增量挂载 `@deepseek-ai/dsh-mcp-client` 子实例。定义未变化的连接保持原实例，新增不重新挂载管理插件或已有连接；插件卸载会释放自己创建的连接。桥接器是 optional peer，由 DSH 提供，不自动安装另一套。
+DSH 原生 MCP 由各自的 `@deepseek-ai/dsh-mcp-client` 配置条目声明，既有条目通过 DSH 插件管理器管理。页面的托管新增通过 `configEditor.edit()` 保存在**当前管理插件条目**的 `managedServers` 字段，不生成独立的 Profile 原生 MCP 条目，也不写入统一的 `mcp.servers` 路径。该字段声明为官方支持的 volatile 实时字段；Loader 更新引用后发出 `loader/volatile-update`，插件按定义增量挂载 `@deepseek-ai/dsh-mcp-client` 子实例。定义未变化的连接保持原实例，新增不重新挂载管理插件或已有连接；插件卸载时请求释放自己创建的连接。桥接器是 optional peer，由 DSH 提供，不自动安装另一套。
 
-“配置已保存”只表示持久化成功并安排加载，**不表示远端连接成功**。来源卡片把这些记录标为本插件持久化配置，连接状态仍为未知；所选会话实际可见的工具以发现目录为准。插件本地解析或挂载准备失败显示限定原因及 **重试加载 MCP**，重试不保存配置、不重连健康项；释放失败会保留记录并阻止同名替代，但不阻断其他项。官方桥接器内部连接失败仍需查看其诊断，不反推在线状态。高级映射入口拒绝修改本管理插件自身配置，托管定义须走专用校验入口。
+“配置已保存”只表示持久化成功并安排加载，**不表示远端连接成功**。来源卡片把这些记录标为本插件持久化配置，连接状态仍为未知；Profile 工具候选以发现目录为准。插件本地解析、挂载准备或官方桥接器首次连接与工具同步失败时，显示限定原因及 **重试加载 MCP**。重试不保存配置、不重连健康项；桥接器导入和本地启动有等待上限，超时后旧实例释放未完成前不创建同名替代项。释放失败或超时会保留记录并阻止同名替代，但不阻断其他项。官方桥接器运行期间的断线与重连状态没有公开给本插件，仍需查看其诊断；官方桥接器若在释放时只记录传输关闭未获确认，子实例释放完成也不能保证旧 Server 进程已退出。映射 Tool/RPC 拒绝修改本管理插件自身配置，托管定义须走专用校验入口。
 
 ## MCP 发现及来源边界
 
-主视图展示三类信息：
+MCP 主页面按 Profile 的 MCP 配置和命名候选工具分组：
 
-- **MCP 命名候选**：所选视图中实际可见、名称以 `mcp__` 开头的工具，保留完整 public name。该前缀只能说明名称符合命名约定，不能证明工具确实来自 MCP 桥。
-- **MCP 配置来源**：Profile 内 `@deepseek-ai/dsh-mcp-client` 配置条目、所选会话预设中的同类条目，以及本插件持久化的 `managedServers` 定义。来源明确区分，展示白名单标识、serverName（来源提供时）、预设和插件阶段，不返回 command、env、URL 或 headers。
-- **全部可见工具**：支持按名称检索，覆盖未遵循上述命名约定的其他工具。定义与 Profile 相同只表示定义等价，不作为注册来源证明。
+- **MCP Server 分组**：每个名称唯一的配置条目以可展开分组显示。工具名符合 `mcp__<serverName>__` 前缀时，才作为该 Server 的名称候选展示；前缀只用于分组，不能证明注册来源。
+- **未关联 Server**：缺少唯一配置名的工具候选，以及无名或重名配置条目，留在单独的可展开组。一个工具若匹配多个 Server 前缀，也留在该组。工具 public name 保留完整。
 
-当前 DSH MCP 桥没有公开完整的 server provenance 或连接状态目录。工具名有归一化、截断和哈希规则，serverName 也允许双下划线，因此本插件不拆分 public name 来还原 server/raw tool 身份。普通插件同样可以注册同形名称，命名候选不能作为来源证明。
+只在 `serverName` 对应唯一配置项、且工具 public name 只匹配该 Server 时显示在 Server 分组中。普通插件也可以注册同形名称；名称匹配不证明工具来自 MCP server。DSH MCP 桥没有公开完整的 server 来源或连接状态目录，插件不从工具名还原 raw tool 身份。
 
 断线后工具可能仍保留注册；插件 active 不代表连接成功。零工具或资源型 server 也可能不出现在工具目录。所有连接状态均为 `unknown`，页面不会把注册可见标为在线。`provenanceComplete` 和 `connectionStateSupported` 为 false；`complete` 仅表示已支持的来源读取成功，不表示所有 MCP 连接均已枚举。权威来源与状态需要 DSH MCP 桥提供只读元数据接口。
 
 `dsh_manage_mcp_servers` 的 `discover` 操作按调用 Agent 发现上述信息；`list` 在没有配置映射路径时也使用该发现视图。
 
-## 高级配置映射编辑
+## Host 配置映射契约
 
-MCP 页的高级折叠区管理指定配置条目、指定点分隔路径下的自定义 server 映射。默认路径可配置为：
+Host 的 `dsh_manage_mcp_servers` 工具和映射 RPC 管理指定配置条目、指定点分隔路径下的自定义 server 映射。Settings 页面提供 MCP 分组、托管新增/重试和 Skill 管理；映射读写通过 Tool/RPC 调用。可选默认路径由 `mcpConfigPath` 指定。路径必须对应调用方实际维护的自定义映射；`mcp.servers` 只是可选路径示例，不代表 DSH 原生 MCP 的存储格式。
 
-```yaml
-mcpConfigPath: mcp.servers
-```
+`list` 在提供路径或配置了默认路径时返回该映射；`mcp.catalog` 读取映射目录，`upsert`、`remove` 及对应 RPC 编辑映射。映射操作不连接或启动 server，也不自动导入其他客户端配置。
 
-此格式只是示例，必须填写实际映射路径。`list` 在提供路径或配置了默认路径时返回该映射；`upsert`、`remove` 编辑该映射。它不连接或启动 server，也不自动导入其他客户端配置。
+列表读取 Loader 当前有效配置，字符串值只显示 `[configured]`，凭据类字段值不返回。调用方通过目录获得目标条目和有效定义修订标识，再在写入中指定路径、条目及当前修订。
 
-列表读取 Loader 当前有效配置，字符串值只显示 `[configured]`，凭据类字段值不返回。写入绑定成功读取的路径，路径或条目变化会关闭旧表单和移除确认。写入只允许在 Profile 全局视图进行；提交期间不能切换会话。
+`entryId` 接受目录返回的唯一 id、patch id 或无歧义模块名。编辑通过 `configEditor.edit()` 校验、持久化并由 Loader 应用。更新需提供完整 server JSON；替换已有条目时，目标 server 的省略字段会被删除，且须从目录的 `servers[name].revision` 提交 `expectedRevision`。保存时若目标定义已变化，操作会拒绝，需重新读取目录后确认。其他配置字段保留当前值。
 
-`entryId` 接受目录返回的唯一 id、patch id 或无歧义模块名。编辑通过 `configEditor.edit()` 校验、持久化并由 Loader 应用。更新需提供完整 server JSON，目标 server 的省略字段不会自动保留；其他配置字段保留当前值。
-
-移除只处理本地覆盖。仅继承的 server 拒绝移除；无对应覆盖返回 `changed: false`；同名继承定义存在时显式恢复它并返回 `inheritedRemains: true`，不修改继承来源。
+移除只处理本地覆盖。仅继承的 server 拒绝移除；无对应覆盖返回 `changed: false`；已有覆盖须提交当前 `servers[name].revision`，若编辑时版本已变化则拒绝并要求刷新目录。同名继承定义存在时显式恢复它并返回 `inheritedRemains: true`，不修改继承来源。
 
 ## Skill 管理
 
 `dsh_manage_skills` 支持目录、正文及本插件生命周期内的 Runtime 注册/注销。目录返回 `complete` 和视图 `scope`；发现未完成或失败不作为已确认的空目录。页面展示 source、provider 和可用的本地路径，不展示远程资源 URL。
 
-Agent 调用工具时读取其自身作用域与工作目录；页面按所选会话读取。Runtime 注册及注销属于 Profile 全局操作，页面需切换到全局视图。已有有效同名定义或不完整发现会拒绝注册；注册后的发现不完整、校验失败或取消会回滚本次注册。
+Agent 调用工具时读取其自身作用域与工作目录；页面读取 Profile 全局范围。已有有效同名定义或不完整发现会拒绝注册；正文保留输入中的换行与首尾空白，只拒绝全空白正文。注册后的发现不完整、校验失败或取消会回滚本次注册。注销前会核对有效 Skill 仍为本插件的 Runtime 定义。
 
 Runtime Skill 随插件退出注销。持久化 Skill 文件的安装、修改和移除不属于此插件能力。
 

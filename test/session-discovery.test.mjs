@@ -12,11 +12,6 @@ const options = () => ({
   skillRows: { 'fixture-A': [skill('alpha-only', 'A instructions')], 'fixture-B': [northstar] },
   scopedTools: { 'fixture-A': [tool('alpha_tool')], 'fixture-B': [tool('mcp__mc__query'), tool('mcp__holo__query')] },
 });
-async function select(ui, id) {
-  const picker = ui.renderer.root.findByProps({ 'aria-label': '能力视图' });
-  assert.equal(picker.props.disabled, false);
-  await act(async () => { picker.props.onChange({ currentTarget: { value: id } }); await tick(); });
-}
 const projection = (id) => ({ [id]: { id, title: 'Fixture selected conversation', retainedBy: { mainView: 1 } } });
 
 await check('Session roster includes cold metadata without reading or resuming conversation logs', async (t) => {
@@ -133,54 +128,47 @@ await check('A selected Agent disappearing during discovery invalidates the resp
   assert.equal(Object.hasOwn(result, 'value'), false);
 });
 
-await check('Settings defaults to its selected conversation and finds all three fixture capabilities', async (t) => {
-  const host = await fixture(options()); t.after(() => host.close());
+await check('Settings stays on the Profile catalog when another conversation owns the main view', async (t) => {
+  const opts = options();
+  opts.skillRows.profile = [skill('profile-only', 'Fixture Profile instructions')];
+  opts.globalTools = [tool('mcp__profile__query')];
+  const host = await fixture(opts); t.after(() => host.close());
   const ui = await page(t, host, undefined, projection('fixture-B'));
-  assert.equal(ui.renderer.root.findByProps({ 'aria-label': '能力视图' }).props.value, 'fixture-B');
-  assert.ok(ui.content().includes('mcp__mc__query'));
-  assert.ok(ui.content().includes('mcp__holo__query'));
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '能力视图' }).length, 0);
+  assert.equal(ui.requests.some((row) => row.method === 'contexts.list'), false);
+  assert.equal(ui.requests.filter((row) => ['skills.list', 'mcp.discover'].includes(row.method)).every((row) => !row.args.sessionId), true);
+  assert.equal(ui.content().includes('该视图全部可见工具'), false);
   await ui.click('Skills');
-  assert.ok(ui.content().includes('northstar-okr'));
+  assert.ok(ui.content().includes('profile-only'));
+  assert.equal(ui.content().includes('northstar-okr'), false);
   await ui.click('查看正文');
-  assert.ok(ui.content().includes(northstar.content));
-  assert.equal(ui.requests.filter((row) => ['skills.list', 'skills.get', 'mcp.discover'].includes(row.method)).every((row) => row.args.sessionId === 'fixture-B'), true);
+  assert.ok(ui.content().includes('Fixture Profile instructions'));
+  assert.equal(ui.requests.filter((row) => row.method === 'skills.get').every((row) => !row.args.sessionId), true);
   assert.equal(ui.mutations().length, 0);
 });
 
-await check('Switching sessions discards a delayed old Skill list', async (t) => {
-  const host = await fixture(options()); t.after(() => host.close());
-  let release;
-  const gate = new Promise((done) => { release = done; });
-  let used = false;
-  const ui = await page(t, host, (method, args) => {
-    if (method === 'skills.list' && args.sessionId === 'fixture-A' && !used) { used = true; return gate; }
-  }, projection('fixture-A'));
-  await select(ui, 'fixture-B');
-  await ui.click('Skills');
-  assert.ok(ui.content().includes('northstar-okr'));
-  await act(async () => { release(await host.rpc('skills.list', { sessionId: 'fixture-A' })); await tick(); });
-  assert.ok(ui.content().includes('northstar-okr'));
-  assert.equal(ui.content().includes('alpha-only'), false);
-});
-
-await check('Switching sessions discards a delayed body and reads the matching new body', async (t) => {
-  const opts = options();
-  opts.skillRows = { 'fixture-A': [skill('same-name', 'Fixture body A')], 'fixture-B': [skill('same-name', 'Fixture body B')] };
+await check('A stale Skill body is discarded after refreshing the Profile catalog', async (t) => {
+  const opts = options(); opts.skillRows.profile = [skill('stable-skill', 'Fixture catalog body')];
   const host = await fixture(opts); t.after(() => host.close());
   let release;
   const gate = new Promise((done) => { release = done; });
-  const ui = await page(t, host, (method, args) => method === 'skills.get' && args.sessionId === 'fixture-A' ? gate : undefined, projection('fixture-A'));
-  await ui.click('Skills'); await ui.click('查看正文');
-  await select(ui, 'fixture-B');
-  await act(async () => { release(await host.rpc('skills.get', { sessionId: 'fixture-A', name: 'same-name' })); await tick(); });
-  assert.equal(ui.content().includes('Fixture body A'), false);
+  let first = true;
+  const ui = await page(t, host, (method) => {
+    if (method === 'skills.get' && first) { first = false; return gate; }
+  });
+  await ui.click('Skills');
   await ui.click('查看正文');
-  assert.ok(ui.content().includes('Fixture body B'));
+  await ui.click('刷新 Skills');
+  await act(async () => { release(await host.rpc('skills.get', { name: 'stable-skill' })); await tick(); });
+  assert.equal(ui.content().includes('Fixture catalog body'), false);
+  await ui.click('查看正文');
+  assert.ok(ui.content().includes('Fixture catalog body'));
+  assert.equal(ui.requests.filter((row) => row.method === 'skills.get').length, 2);
 });
 
-await check('Mismatched response scope produces an explicit page error', async (t) => {
+await check('Mismatched Profile response scope produces an explicit page error', async (t) => {
   const host = await fixture(options()); t.after(() => host.close());
-  const ui = await page(t, host, (method) => method === 'skills.list' ? { ok: true, value: { skills: [northstar], complete: true, context: { sessionId: 'fixture-A' } } } : undefined, projection('fixture-B'));
+  const ui = await page(t, host, (method) => method === 'skills.list' ? { ok: true, value: { skills: [northstar], complete: true, context: { sessionId: 'fixture-A' } } } : undefined);
   await ui.click('Skills');
   assert.ok(ui.alerts().some((message) => message.includes('上下文不匹配')));
   assert.equal(ui.content().includes('northstar-okr'), false);
@@ -197,35 +185,11 @@ await check('Agent views cannot mutate global config maps or Runtime Skills', as
   assert.equal(host.trace.registrations, 0);
 });
 
-await check('Switching sessions discards a delayed MCP discovery response', async (t) => {
-  const opts = options(); opts.scopedTools['fixture-A'] = [tool('mcp__alpha__ping')];
-  const host = await fixture(opts); t.after(() => host.close());
-  let release;
-  const gate = new Promise((done) => { release = done; });
-  const ui = await page(t, host, (method, args) => method === 'mcp.discover' && args.sessionId === 'fixture-A' ? gate : undefined, projection('fixture-A'));
-  await select(ui, 'fixture-B');
-  assert.ok(ui.content().includes('mcp__holo__query'));
-  await act(async () => { release(await host.rpc('mcp.discover', { sessionId: 'fixture-A' })); await tick(); });
-  assert.ok(ui.content().includes('mcp__holo__query'));
-  assert.equal(ui.content().includes('mcp__alpha__ping'), false);
-});
-
-await check('A global write locks view selection until its result and refresh settle', async (t) => {
-  const host = await fixture(options()); t.after(() => host.close());
-  let release;
-  const gate = new Promise((done) => { release = done; });
-  const ui = await page(t, host, (method) => method === 'mcp.remove' ? gate : undefined);
-  await ui.click('移除'); await ui.click('确认移除');
-  assert.equal(ui.renderer.root.findByProps({ 'aria-label': '能力视图' }).props.disabled, true);
-  await act(async () => { release(await host.rpc('mcp.remove', { entryId: 'include:fixture', name: 'demo', configPath: 'maps.A', sessionId: '' })); await tick(); });
-  assert.equal(ui.renderer.root.findByProps({ 'aria-label': '能力视图' }).props.disabled, false);
-});
-
 await check('A refresh clears the previous catalog body and rebinds the body to the new catalog', async (t) => {
   const opts = options();
-  opts.skillRows = { 'fixture-A': [skill('stable-skill', 'Fixture catalog body')] };
+  opts.skillRows = { profile: [skill('stable-skill', 'Fixture catalog body')] };
   const host = await fixture(opts); t.after(() => host.close());
-  const ui = await page(t, host, undefined, projection('fixture-A'));
+  const ui = await page(t, host);
   await ui.click('Skills');
   await ui.click('查看正文');
   assert.ok(ui.content().includes('Fixture catalog body'), '首次读取应显示正文');
@@ -240,6 +204,57 @@ await check('A refresh clears the previous catalog body and rebinds the body to 
   await ui.click('查看正文');
   assert.ok(ui.content().includes('Fixture catalog body'), '正文应重新绑定到刷新后的目录');
   assert.equal(ui.requests.filter((row) => row.method === 'skills.get').length, 2);
+});
+
+await check('Initial MCP discovery displays server groups while managed synchronization is pending and refreshes after it settles', async (t) => {
+  const host = await fixture({ managed: true, managedServers: {
+    broken: { transport: 'streamable-http', url: 'http://fixture.invalid/mcp', headersFromEnv: { 'X-Fixture': 'DSH_MCP_UI_RACE_FIXTURE_UNSET' } },
+  } }); t.after(() => host.close());
+  const discovered = await host.rpc('mcp.discover');
+  assert.equal(discovered.value.configured.find((row) => row.serverName === 'broken').phase, 'failed');
+  let release;
+  const gate = new Promise((done) => { release = done; });
+  const ui = await page(t, host, (method) => method === 'mcp.managed' ? gate : undefined);
+  assert.equal(ui.requests.filter((row) => row.method === 'mcp.discover').length, 1,
+    '托管同步待决时应已请求 Profile MCP 目录');
+  assert.ok(ui.content().includes('MCP Server（1）'), '托管同步待决时应显示分组目录');
+  assert.ok(ui.content().includes('broken（0 个候选工具）'));
+  assert.equal(ui.button('添加托管 MCP').props.disabled, true, '同步完成前托管写入应保持锁定');
+  await act(async () => { release(await host.rpc('mcp.managed')); await tick(); });
+  assert.equal(ui.requests.filter((row) => row.method === 'mcp.discover').length, 2,
+    '托管同步完成后应重新发现 MCP 目录');
+  assert.ok(ui.content().includes('broken（0 个候选工具）'));
+  assert.ok(ui.alerts().some((message) => message.includes('缺少环境变量')));
+});
+
+await check('A delayed main-view projection preserves the user-opened Profile editor', async (t) => {
+  const host = await fixture({ managed: true }); t.after(() => host.close());
+  const ui = await page(t, host);
+  await ui.click('添加托管 MCP');
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
+  await ui.setSessionRows(projection('fixture-B'));
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
+  assert.equal(ui.requests.some((row) => row.method === 'contexts.list'), false);
+});
+
+await check('A delayed main-view projection preserves a completed Profile write notice', async (t) => {
+  const host = await fixture(options()); t.after(() => host.close());
+  const ui = await page(t, host);
+  await ui.click('Skills');
+  await ui.click('注册 Runtime Skill');
+  await act(async () => {
+    const form = ui.renderer.root.findByType('form');
+    const [name, description] = form.findAllByType('input');
+    name.props.onChange({ currentTarget: { value: 'fixture-notice' } });
+    description.props.onChange({ currentTarget: { value: 'Fixture notice' } });
+    form.findByType('textarea').props.onChange({ currentTarget: { value: 'Fixture content' } });
+  });
+  await act(async () => { await ui.renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }); await tick(); });
+  assert.ok(ui.content().includes('Runtime Skill 已注册'));
+  await ui.setSessionRows(projection('fixture-B'));
+  assert.ok(ui.content().includes('Runtime Skill 已注册'));
+  assert.equal(ui.mutations().filter((row) => row.method === 'skills.register').length, 1);
+  assert.equal(ui.mutations().find((row) => row.method === 'skills.register').args.sessionId || '', '');
 });
 
 await tick();

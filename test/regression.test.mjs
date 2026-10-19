@@ -264,7 +264,9 @@ async function page(t, host, intercept, sessionRows = {}) {
   });
   assert.ok(Page);
   let renderer;
-  await act(async () => { renderer = Renderer.create(React.createElement(Page, { useSessions: (selector) => selector({ byId: sessionRows }) })); await tick(); });
+  let projectedSessions = sessionRows;
+  const makePage = () => React.createElement(Page, { useSessions: (selector) => selector({ byId: projectedSessions }) });
+  await act(async () => { renderer = Renderer.create(makePage()); await tick(); });
   t.after(async () => {
     await act(async () => { renderer.unmount(); });
     for (const dispose of disposers.reverse()) dispose();
@@ -272,15 +274,14 @@ async function page(t, host, intercept, sessionRows = {}) {
   });
   return {
     renderer, requests,
+    async setSessionRows(next) { projectedSessions = next; await act(async () => { renderer.update(makePage()); await tick(); }); },
     button(label) { return renderer.root.findAllByType('button').find((node) => text(node) === label); },
-    path() { return renderer.root.findByProps({ placeholder: 'mcp.servers' }); },
     async click(label) {
       const button = this.button(label);
       assert.ok(button, 'Expected button: ' + label);
       assert.equal(!!button.props.disabled, false, 'Button must be enabled: ' + label);
       await act(async () => { await button.props.onClick(); await tick(); });
     },
-    async setPath(value) { await act(async () => { this.path().props.onChange({ currentTarget: { value } }); }); },
     alerts() { return renderer.root.findAllByProps({ role: 'alert' }).map(text); },
     content() { return text(renderer.root); },
     mutations() { return requests.filter(({ method }) => ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method)); },
@@ -317,6 +318,25 @@ await check('Disposal removes owned routes, tools and Runtime Skills', async () 
   assert.equal(host.runtime.size, 0);
 });
 
+await check('Plugin unload releases a Runtime Skill while post-registration discovery is pending', async () => {
+  let releaseObserved;
+  const observed = new Promise((resolve) => { releaseObserved = resolve; });
+  let snapshots = 0;
+  const host = await fixture({
+    snapshot: ({ runtime }) => ++snapshots === 2 ? observed : { skills: [...runtime.values()], complete: true },
+  });
+  const registering = host.call('dsh_manage_skills', { action: 'register', name: 'late-skill', description: 'Late', content: 'Fixture instructions' });
+  await tick();
+  assert.equal(snapshots, 2);
+  assert.equal(host.runtime.size, 1);
+  const saved = [...host.runtime.values()];
+  await host.close();
+  assert.equal(host.runtime.size, 0);
+  releaseObserved({ skills: saved, complete: true });
+  await assert.rejects(registering);
+  assert.equal(host.runtime.size, 0);
+});
+
 await check('Catalog uses effective Loader config, true row identity and blank-path fallback', async (t) => {
   const host = await fixture({ inherited: { maps: { A: { obsolete: {} } } }, override: { maps: { A: { overridden: {} } } }, current: { maps: { A: { actual: { command: 'fixture-command' } } } } });
   t.after(() => host.close());
@@ -339,11 +359,24 @@ await check('Override removal restores inherited definition and preserves other 
   const inherited = { maps: { A: { demo: { command: 'inherited-fixture' } } } };
   const host = await fixture({ inherited });
   t.after(() => host.close());
-  const value = await host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo' });
+  const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
+  const revision = catalog.entries[0].servers.demo.revision;
+  const value = await host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo', expectedRevision: revision });
   assert.equal(value.inheritedRemains, true);
   assert.deepEqual(host.entry.options.config.maps.A.demo, inherited.maps.A.demo);
   assert.equal(host.entry.options.config.maps.B.demo.command, 'fixture-b');
   assert.deepEqual(host.entry.options.config.unrelated, { keep: true });
+});
+
+await check('Removing an overridden Server rejects missing and stale revisions', async (t) => {
+  const host = await fixture();
+  t.after(() => host.close());
+  const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
+  const oldRevision = catalog.entries[0].servers.demo.revision;
+  await assert.rejects(host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo' }), /lacks a revision/);
+  host.entry.options.config.maps.A.demo.command = 'new-definition';
+  await assert.rejects(host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo', expectedRevision: oldRevision }), /changed or lacks a revision/);
+  assert.equal(host.entry.options.config.maps.A.demo.command, 'new-definition');
 });
 
 await check('External provider TypeErrors are sanitized at both tool and RPC boundaries', async (t) => {
@@ -406,72 +439,98 @@ await check('Cancellation during registration rolls back the borrowed Skill', as
   assert.equal(host.trace.rollbacks, 1);
 });
 
-await check('React page loads through the real in-process Host RPC envelopes', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
-  const ui = await page(t, host);
-  assert.equal(ui.path().props.value, 'maps.A');
-  assert.equal(ui.alerts().length, 0);
-  assert.equal(ui.button('移除').props.disabled, false);
-  assert.equal(ui.mutations().length, 0);
+await check('Runtime Skill registration preserves body whitespace and rejects blank bodies', async (t) => {
+  const host = await fixture(); t.after(() => host.close());
+  const content = '\n  indented line\n\n';
+  const args = { action: 'register', name: 'spaced-skill', description: 'Fixture', content };
+  assert.equal((await host.call('dsh_manage_skills', args)).persisted, false);
+  assert.equal(host.runtime.get('spaced-skill').content, content);
+  assert.equal((await host.rpc('skills.get', { name: 'spaced-skill' })).value.skill.content, content);
+  await assert.rejects(host.call('dsh_manage_skills', { ...args, name: 'blank-skill', content: ' \n\t' }), /required/);
+  assert.equal(host.runtime.has('blank-skill'), false);
 });
 
-await check('Changing A to B locks old cards; only a successful B read permits removal of B', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
-  const ui = await page(t, host);
-  await ui.click('移除');
-  assert.ok(ui.button('确认移除'));
-  await ui.setPath('maps.B');
-  assert.equal(ui.button('确认移除'), undefined);
-  assert.equal(ui.button('移除').props.disabled, true);
-  assert.equal(ui.button('编辑 override').props.disabled, true);
-  assert.equal(ui.button('新增 MCP server').props.disabled, true);
-  assert.equal(ui.mutations().length, 0);
-  await ui.click('读取配置');
-  await ui.click('移除');
-  await ui.click('确认移除');
-  const removal = ui.mutations().find(({ method }) => method === 'mcp.remove');
-  assert.equal(removal.args.configPath, 'maps.B');
-  assert.equal(host.entry.options.config.maps.A.demo.command, 'fixture-a');
-  assert.equal(Object.hasOwn(host.entry.options.config.maps.B, 'demo'), false);
+await check('A shadowed Runtime Skill cannot be offered or removed as an external Skill', async (t) => {
+  const shadow = [];
+  const host = await fixture({ skillRows: { profile: shadow } }); t.after(() => host.close());
+  await host.call('dsh_manage_skills', { action: 'register', name: 'shared-skill', description: 'Fixture', content: 'Fixture instructions' });
+  shadow.push({ name: 'shared-skill', description: 'External', content: 'External instructions', source: 'project', provider: 'fixture-project' });
+  const rows = (await host.rpc('skills.list')).value.skills;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, 'project');
+  assert.equal(rows[0].canUnregister, false);
+  const denied = await host.rpc('skills.unregister', { name: 'shared-skill' });
+  assert.equal(denied.ok, false);
+  assert.equal(host.runtime.has('shared-skill'), true);
+  shadow.pop();
+  assert.equal((await host.rpc('skills.list')).value.skills.find((row) => row.source === 'runtime').canUnregister, true);
+  assert.equal((await host.rpc('skills.unregister', { name: 'shared-skill' })).value.changed, true);
+  assert.equal(host.runtime.has('shared-skill'), false);
 });
 
-await check('Clearing the path closes an old edit form and cannot fall back to another write target', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
-  const ui = await page(t, host);
-  await ui.click('编辑 override');
-  assert.equal(ui.renderer.root.findAllByType('form').length, 1);
-  await ui.setPath('');
-  assert.equal(ui.renderer.root.findAllByType('form').length, 0);
-  assert.equal(ui.button('移除').props.disabled, true);
-  assert.equal(ui.button('新增 MCP server').props.disabled, true);
-  assert.equal(ui.mutations().length, 0);
-});
-
-await check('A response arriving after path input changed does not authorize that new path', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
+await check('Concurrent unregistration cannot dispose one Runtime Skill twice', async (t) => {
+  let gated = false;
   let release;
-  const pending = new Promise((done) => { release = done; });
-  let intercepted = false;
-  const ui = await page(t, host, (method) => {
-    if (method === 'mcp.catalog' && !intercepted) { intercepted = true; return pending; }
-  });
-  await ui.setPath('maps.B');
-  await act(async () => { release(await host.rpc('mcp.catalog')); await tick(); });
-  assert.equal(ui.path().props.value, 'maps.B');
-  assert.equal(ui.button('移除').props.disabled, true);
-  assert.equal(ui.mutations().length, 0);
+  const gate = new Promise((resolve) => { release = resolve; });
+  const host = await fixture({ get: ({ name, runtime }) => gated ? gate.then(() => runtime.get(name)) : runtime.get(name) });
+  t.after(() => host.close());
+  await host.call('dsh_manage_skills', { action: 'register', name: 'concurrent-skill', description: 'Fixture', content: 'Instructions' });
+  gated = true;
+  const first = host.rpc('skills.unregister', { name: 'concurrent-skill' });
+  await tick();
+  const second = await host.rpc('skills.unregister', { name: 'concurrent-skill' });
+  assert.equal(second.ok, false);
+  assert.match(second.error.message, /currently being unregistered/);
+  release();
+  assert.equal((await first).value.changed, true);
+  assert.equal(host.trace.rollbacks, 1);
+  assert.equal((await host.rpc('skills.unregister', { name: 'concurrent-skill' })).value.changed, false);
 });
 
-await check('Malformed catalog results show an error rather than enabling empty catalog writes', async (t) => {
-  const host = await fixture();
+await check('A Server replacement rejects changes made after catalog read', async (t) => {
+  const host = await fixture(); t.after(() => host.close());
+  const catalog = await host.rpc('mcp.catalog');
+  const revision = catalog.value.entries.find((row) => row.entry.id === 'include:fixture').servers.demo.revision;
+  const payload = { entryId: 'include:fixture', configPath: 'maps.A', name: 'demo', definition: { command: 'replacement' }, expectedRevision: revision };
+  host.entry.options.config.maps.A.demo.command = 'external-update';
+  const denied = await host.rpc('mcp.upsert', payload);
+  assert.equal(denied.ok, false);
+  assert.match(denied.error.message, /refresh the catalog/);
+  assert.equal(host.entry.options.config.maps.A.demo.command, 'external-update');
+  const fresh = await host.rpc('mcp.catalog');
+  payload.expectedRevision = fresh.value.entries.find((row) => row.entry.id === 'include:fixture').servers.demo.revision;
+  assert.equal((await host.rpc('mcp.upsert', payload)).value.changed, true);
+  assert.equal(host.entry.options.config.maps.A.demo.command, 'replacement');
+});
+
+await check('Settings exposes MCP groups, managed add and Skills without mapping UI or catalog RPC', async (t) => {
+  const host = await fixture({ managed: true, managedServers: {
+    grouped: { transport: 'stdio', command: 'fixture-command', args: [] },
+  }, globalTools: [{ name: 'mcp__grouped__query' }], skillRows: { profile: [
+    { name: 'fixture-visible', description: 'Fixture Skill', content: 'Fixture visible body', source: 'global', provider: 'fixture' },
+  ] } });
   t.after(() => host.close());
-  const ui = await page(t, host, (method) => method === 'mcp.catalog' ? { ok: true, value: {} } : undefined);
-  assert.ok(ui.alerts().some((value) => value.includes('返回格式无效')));
-  assert.equal(ui.button('新增 MCP server').props.disabled, true);
+  const ui = await page(t, host);
+  const assertNoMap = () => {
+    assert.doesNotMatch(ui.content(), /高级：Profile 配置映射编辑|MCP 映射路径|配置条目|新增自定义映射 Server|替换 override/);
+    assert.equal(ui.renderer.root.findAllByProps({ placeholder: 'mcp.servers' }).length, 0);
+    assert.equal(ui.button('读取配置'), undefined);
+    assert.equal(ui.requests.some(({ method }) => ['mcp.catalog', 'mcp.upsert', 'mcp.remove'].includes(method)), false);
+  };
+  assertNoMap();
+  assert.ok(ui.content().includes('grouped（1 个候选工具）'));
+  await ui.click('刷新 MCP 发现');
+  await ui.click('添加托管 MCP');
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
+  assertNoMap();
+  await ui.click('Skills');
+  assert.ok(ui.content().includes('fixture-visible'));
+  await ui.click('查看正文');
+  assert.ok(ui.content().includes('Fixture visible body'));
+  assert.equal(ui.button('注册 Runtime Skill').props.disabled, false);
+  assertNoMap();
+  assert.equal(ui.alerts().length, 0);
+  assert.equal(ui.mutations().length, 0);
 });
 
 await check('Incomplete Skill discovery is displayed as incomplete, not confirmed empty', async (t) => {

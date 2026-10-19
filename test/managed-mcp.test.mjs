@@ -40,6 +40,7 @@ await check('Manual stdio save persists configuration and mounts the bridge with
   assert.equal(result.value.connectionState, 'unknown');
   assert.deepEqual(host.managerEntry.options.config.managedServers['manual-stdio'], normalizeServer('manual-stdio', stdio()));
   assert.equal(host.bridgeRuns.get('manual-stdio').command, 'fixture-command');
+  assert.equal(host.bridgeRuns.get('manual-stdio').failOnStartupError, true);
   assert.deepEqual([...host.routes.values()], routes);
   assert.equal(host.trace.edits, 1);
   assert.equal((await host.rpc('mcp.discover')).value.configured.some((row) => row.serverName === 'manual-stdio' && row.kind === 'managed-config'), true);
@@ -52,6 +53,7 @@ await check('Adding a second MCP preserves the first connection identity and doe
   assert.equal((await add(host, 'second', http)).ok, true); await settle();
   assert.equal(host.bridgeRuns.get('first'), first);
   assert.deepEqual(host.bridgeTrace.starts, ['first', 'second']);
+  assert.equal(host.bridgeRuns.get('second').failOnStartupError, true);
   assert.deepEqual(host.bridgeTrace.stops, []);
   assert.equal((await host.rpc('mcp.managed')).value.servers.length, 2);
 });
@@ -149,8 +151,8 @@ await check('Cancellation during queued managed configuration save leaves defini
 await check('Main MCP page offers a stdio form that saves without a map path', async (t) => {
   const host = await fixture({ managed: true }); t.after(() => host.close());
   const ui = await page(t, host);
-  assert.equal(ui.button('新增 MCP').props.disabled, false);
-  await ui.click('新增 MCP');
+  assert.equal(ui.button('添加托管 MCP').props.disabled, false);
+  await ui.click('添加托管 MCP');
   await fill(ui, { 'MCP Server 名称': 'ui-stdio', 'MCP 启动命令': 'fixture-command', 'MCP 参数': '["fixture-script"]' });
   await submit(ui); await settle();
   assert.equal(host.managerEntry.options.config.managedServers['ui-stdio'].transport, 'stdio');
@@ -161,7 +163,7 @@ await check('Main MCP page offers a stdio form that saves without a map path', a
 await check('HTTP form saves HTTP configuration and hides stdio fields', async (t) => {
   const host = await fixture({ managed: true }); t.after(() => host.close());
   const ui = await page(t, host);
-  await ui.click('新增 MCP');
+  await ui.click('添加托管 MCP');
   await fill(ui, { 'MCP 传输方式': 'streamable-http' });
   assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': 'MCP 启动命令' }).length, 0);
   await fill(ui, { 'MCP Server 名称': 'ui-http', 'MCP HTTP 地址': 'http://fixture.invalid/mcp' });
@@ -175,7 +177,7 @@ await check('HTTP form saves HTTP configuration and hides stdio fields', async (
 await check('Malformed argument JSON never reaches the add RPC', async (t) => {
   const host = await fixture({ managed: true }); t.after(() => host.close());
   const ui = await page(t, host);
-  await ui.click('新增 MCP');
+  await ui.click('添加托管 MCP');
   await fill(ui, { 'MCP Server 名称': 'bad-json', 'MCP 启动命令': 'fixture-command', 'MCP 参数': '{}' });
   await submit(ui);
   assert.ok(ui.alerts().some((message) => message.includes('JSON 格式无效')));
@@ -196,6 +198,50 @@ await check('Config owner resolution accepts an alias with the same active Fiber
   const host = await fixture({ managed: true }); t.after(() => host.close());
   host.managerEntry.options.name = 'fixture-module-alias';
   assert.equal((await add(host, 'aliased-owner')).ok, true);
+});
+
+await check('Settings groups tools only when exactly one configured Server name matches', async (t) => {
+  const host = await fixture({ managed: true }); t.after(() => host.close());
+  const discovered = (await host.rpc('mcp.discover')).value;
+  const configured = ['foo', 'foo', 'foo__bar', 'clean'].map((serverName, index) => ({
+    serverName, entryId: `fixture-${index}`, kind: 'profile-config',
+  }));
+  const candidates = ['mcp__foo__bar__ping', 'mcp__foo__ping', 'mcp__clean__ping', 'mcp__other__ping']
+    .map((name) => ({ name, definitionView: 'profile' }));
+  const ui = await page(t, host, (method) => method === 'mcp.discover'
+    ? { ok: true, value: { ...discovered, configured, candidates, tools: candidates } } : undefined);
+  const groups = ui.renderer.root.findAllByType('details');
+  const group = (label) => groups.find((item) => item.findByType('summary').children.join('').startsWith(label));
+  assert.equal(group('foo（'), undefined);
+  assert.match(group('foo__bar（').findByType('summary').children.join(''), /0 个候选工具/);
+  assert.match(group('clean（').findByType('summary').children.join(''), /1 个候选工具/);
+  const unassociated = group('未关联 Server（');
+  assert.match(unassociated.findByType('summary').children.join(''), /3 个工具 · 2 条配置/);
+  const displayed = (node) => typeof node === 'string' ? node : node.children.map(displayed).join('');
+  const unassociatedText = displayed(unassociated);
+  assert.ok(unassociatedText.includes('mcp__foo__bar__ping'));
+  assert.ok(unassociatedText.includes('mcp__foo__ping'));
+  assert.ok(unassociatedText.includes('mcp__other__ping'));
+  assert.equal(displayed(group('clean（')).includes('mcp__other__ping'), false);
+});
+
+await check("Settings leaves tools unmatched when unique Server names overlap", async (t) => {
+  const host = await fixture({ managed: true }); t.after(() => host.close());
+  const discovered = (await host.rpc("mcp.discover")).value;
+  const configured = ["bar", "bar__baz"].map((serverName, index) => ({
+    serverName, entryId: "fixture-" + index, kind: "profile-config",
+  }));
+  const candidates = [{ name: "mcp__bar__baz__ping", definitionView: "profile" }];
+  const ui = await page(t, host, (method) => method === "mcp.discover"
+    ? { ok: true, value: { ...discovered, configured, candidates, tools: candidates } } : undefined);
+  const groups = ui.renderer.root.findAllByType("details");
+  const group = (label) => groups.find((item) => item.findByType("summary").children.join("").startsWith(label));
+  assert.match(group("bar\uff08").findByType("summary").children.join(""), /0 \u4e2a\u5019\u9009\u5de5\u5177/);
+  assert.match(group("bar__baz\uff08").findByType("summary").children.join(""), /0 \u4e2a\u5019\u9009\u5de5\u5177/);
+  const unassociated = group("\u672a\u5173\u8054 Server\uff08");
+  assert.match(unassociated.findByType("summary").children.join(""), /1 \u4e2a\u5de5\u5177 \u00b7 0 \u6761\u914d\u7f6e/);
+  const displayed = (node) => typeof node === "string" ? node : node.children.map(displayed).join("");
+  assert.ok(displayed(unassociated).includes("mcp__bar__baz__ping"));
 });
 
 await check('Failed local configuration reports a safe reason and retries without touching healthy instances', async (t) => {
@@ -219,6 +265,191 @@ await check('Failed local configuration reports a safe reason and retries withou
   assert.equal(host.trace.edits, 0);
   assert.equal(JSON.stringify((await host.rpc('mcp.managed')).value).includes('fixture-placeholder'), false);
   assert.equal((await host.rpc('mcp.retry', { serverName: 'healthy' })).ok, false);
+});
+
+await check('Async bridge startup failure is redacted and retry preserves healthy Cordis fibers without editing config', async () => {
+  const desired = {
+    healthy: normalizeServer('healthy', stdio()),
+    retryable: normalizeServer('retryable', stdio()),
+  };
+  const starts = []; const stops = []; let fail = true; let edits = 0;
+  const ctx = new Context(); let manager; let owner;
+  ctx.reflect.provide('configEditor', {
+    configuration: () => [{ entry: owner }],
+    async edit() { edits++; throw new Error('Retry must not edit configuration'); },
+  });
+  const bridge = { async apply(child, actual) {
+    starts.push(actual.serverName);
+    if (actual.serverName === 'retryable' && fail) {
+      fail = false;
+      await tick();
+      // The native bridge reports an initial connection failure only in strict startup mode.
+      if (actual.failOnStartupError) throw new Error('fixture-private-bridge-detail');
+      return;
+    }
+    child.effect(() => () => { stops.push(actual.serverName); });
+  } };
+  const fiber = ctx.plugin({ name: 'fixture-async-bridge-owner', apply(child) {
+    owner = { fiber: child.fiber };
+    manager = createManagedMcp(child, { managedServers: { get: () => desired } },
+      { async assertWrite() {} }, async () => bridge);
+  } });
+  try {
+    await fiber.await(); await manager.sync();
+    const failed = manager.catalog().servers.find((row) => row.serverName === 'retryable');
+    assert.equal(failed.phase, 'failed');
+    assert.equal(failed.error, '本地 MCP 加载失败，请检查官方桥接器。');
+    assert.equal(JSON.stringify(manager.catalog()).includes('fixture-private-bridge-detail'), false);
+    assert.deepEqual(starts, ['healthy', 'retryable']);
+    assert.deepEqual(stops, []);
+    const signal = new AbortController().signal;
+    await assert.rejects(manager.retry({ serverName: 'healthy' }, signal), /只允许重试/);
+    await manager.retry({ serverName: 'retryable' }, signal);
+    assert.deepEqual(starts, ['healthy', 'retryable', 'retryable']);
+    assert.deepEqual(stops, []);
+    assert.equal(manager.catalog().servers.find((row) => row.serverName === 'retryable').phase, 'declared');
+    assert.equal(edits, 0);
+  } finally {
+    await fiber.dispose(); await fiber.await();
+  }
+  assert.deepEqual(stops.sort(), ['healthy', 'retryable']);
+});
+
+await check('A removed or replaced definition during bridge startup releases its stale fiber', async () => {
+  for (const replacement of [false, true]) {
+    let desired = { stale: normalizeServer('stale', stdio()) };
+    const starts = []; const stops = []; let entered; let release; let manager;
+    const arrival = new Promise((resolve) => { entered = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const ctx = new Context();
+    const bridge = { async apply(child, actual) {
+      const id = `${actual.serverName}:${actual.command}`;
+      starts.push(id);
+      child.effect(() => () => { stops.push(id); });
+      if (id === 'stale:fixture-command') { entered(); await gate; }
+    } };
+    const fiber = ctx.plugin({ name: `fixture-stale-startup-${replacement}`, apply(child) {
+      manager = createManagedMcp(child, { managedServers: { get: () => desired } },
+        {}, async () => bridge, { startupTimeoutMs: 300, cleanupTimeoutMs: 100 });
+    } });
+    try {
+      await fiber.await(); await arrival;
+      desired = {
+        ...(replacement ? { stale: normalizeServer('stale', stdio('replacement-command')) } : {}),
+        healthy: normalizeServer('healthy', stdio()),
+      };
+      release(); await manager.sync();
+      assert.equal(stops.filter((id) => id === 'stale:fixture-command').length, 1);
+      assert.equal(starts.filter((id) => id === 'healthy:fixture-command').length, 1);
+      assert.equal(starts.filter((id) => id === 'stale:replacement-command').length, Number(replacement));
+      assert.equal(manager.catalog().servers.some((row) => row.serverName === 'stale'), replacement);
+    } finally {
+      release();
+      await fiber.dispose(); await fiber.await();
+    }
+  }
+});
+
+await check('Pending bridge startup bounds the queue, quarantines its name, and leaves healthy connections reusable', async () => {
+  let desired = { stalled: normalizeServer('stalled', stdio()), healthy: normalizeServer('healthy', stdio()) };
+  const starts = []; const stops = []; let release; let edits = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = new Context(); let manager; let owner;
+  ctx.reflect.provide('configEditor', {
+    configuration: () => [{ entry: owner }],
+    async edit(entry, change) {
+      assert.equal(entry, owner);
+      edits++;
+      desired = change({ managedServers: desired }).managedServers;
+    },
+  });
+  const bridge = { async apply(child, actual) {
+    starts.push(actual.serverName);
+    if (actual.serverName === 'stalled' && starts.filter((name) => name === 'stalled').length === 1) await gate;
+    child.effect(() => () => { stops.push(actual.serverName); });
+  } };
+  const fiber = ctx.plugin({ name: 'fixture-pending-bridge-owner', apply(child) {
+    owner = { fiber: child.fiber };
+    manager = createManagedMcp(child, { managedServers: { get: () => desired } },
+      { async assertWrite() {} }, async () => bridge, { startupTimeoutMs: 30, cleanupTimeoutMs: 30 });
+  } });
+  try {
+    await fiber.await();
+    await manager.sync();
+    assert.deepEqual(starts, ['stalled', 'healthy']);
+    assert.match(manager.catalog().servers.find((row) => row.serverName === 'stalled').error, /启动超时/);
+    const healthy = starts.filter((name) => name === 'healthy').length;
+    assert.equal((await manager.add({ serverName: 'added', definition: stdio() }, new AbortController().signal)).saved, true);
+    assert.deepEqual(starts, ['stalled', 'healthy', 'added']);
+    assert.equal(edits, 1);
+    await assert.rejects(manager.retry({ serverName: 'stalled' }, new AbortController().signal), /清理超时/);
+    assert.equal(starts.filter((name) => name === 'stalled').length, 1);
+    assert.equal(starts.filter((name) => name === 'healthy').length, healthy);
+    assert.deepEqual(stops, []);
+    release(); await tick(); await tick();
+    await manager.retry({ serverName: 'stalled' }, new AbortController().signal);
+    assert.equal(starts.filter((name) => name === 'stalled').length, 2);
+    assert.equal(starts.filter((name) => name === 'healthy').length, healthy);
+    assert.equal(edits, 1);
+  } finally {
+    release();
+    await fiber.dispose(); await fiber.await();
+  }
+  assert.deepEqual(stops.sort(), ['added', 'healthy', 'stalled']);
+});
+
+await check('A permanently pending bridge import bounds sync and save without mounting stale servers', async () => {
+  const desired = { pending: normalizeServer('pending', stdio()), second: normalizeServer('second', stdio()) };
+  const ctx = new Context(); let manager; let edits = 0; let imports = 0;
+  ctx.reflect.provide('configEditor', {
+    configuration: () => [{ entry: { fiber: manager?.ctxFiber } }],
+    async edit() { edits++; },
+  });
+  const fiber = ctx.plugin({ name: 'fixture-pending-bridge-import', apply(child) {
+    manager = createManagedMcp(child, { managedServers: { get: () => desired } },
+      { async assertWrite() {} }, () => { imports++; return new Promise(() => {}); }, { startupTimeoutMs: 25 });
+    manager.ctxFiber = child.fiber;
+  } });
+  try {
+    await fiber.await(); await manager.sync();
+    assert.equal(imports, 1);
+    assert.equal(manager.catalog().servers.length, 2);
+    assert.equal(manager.catalog().servers.every((row) => /加载超时/.test(row.error)), true);
+    await assert.rejects(manager.add({ serverName: 'new', definition: stdio() }, new AbortController().signal), /加载超时/);
+    assert.equal(imports, 2);
+    assert.equal(edits, 0);
+  } finally {
+    await fiber.dispose(); await fiber.await();
+  }
+});
+
+await check('A timed-out bridge import cannot replace a later healthy bridge', async () => {
+  const desired = { delayed: normalizeServer('delayed', stdio()), healthy: normalizeServer('healthy', stdio()) };
+  const starts = []; const stale = []; let release; let calls = 0; let manager;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = new Context();
+  const current = { apply(child, actual) { starts.push(actual.serverName); child.effect(() => () => {}); } };
+  const old = { apply(child, actual) { stale.push(actual.serverName); child.effect(() => () => {}); } };
+  const fiber = ctx.plugin({ name: 'fixture-late-bridge-import', apply(child) {
+    manager = createManagedMcp(child, { managedServers: { get: () => desired } },
+      { async assertWrite() {} }, () => ++calls === 1 ? gate : current, { startupTimeoutMs: 25 });
+  } });
+  try {
+    await fiber.await(); await manager.sync();
+    assert.deepEqual(starts, []);
+    assert.equal(calls, 1);
+    assert.equal(manager.catalog().servers.find((row) => row.serverName === 'delayed').phase, 'failed');
+    assert.equal(manager.catalog().servers.find((row) => row.serverName === 'healthy').phase, 'failed');
+    await manager.retry({ serverName: 'delayed' }, new AbortController().signal);
+    await manager.retry({ serverName: 'healthy' }, new AbortController().signal);
+    release(old); await tick();
+    assert.deepEqual(starts, ['delayed', 'healthy']);
+    assert.deepEqual(stale, []);
+    assert.equal(calls, 2);
+  } finally {
+    release(old);
+    await fiber.dispose(); await fiber.await();
+  }
 });
 
 await check('A definition removed during bridge import cannot start the stale server', async () => {
@@ -245,6 +476,7 @@ await check('One cleanup failure does not stop other connections and exposes onl
   const ctx = { fiber: {}, configEditor: { configuration: () => [] }, on() {}, effect(fn) { cleanup = fn(); },
     plugin(plugin) {
       const name = plugin.name.slice('managed-mcp-'.length);
+      plugin.apply({ plugin() { return { async await() {} }; } });
       const fiber = { state: 2, async dispose() { if (name === 'broken' && fail) throw new Error('fixture-private-dispose-detail'); }, async await() {} };
       fibers.set(name, fiber); return fiber;
     },

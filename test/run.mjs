@@ -10,10 +10,10 @@ const testRoot = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(testRoot, '..');
 const fixture = resolve(testRoot, '.fixture');
 mkdirSync(fixture, { recursive: true });
-for (const [source, destination] of [['index.js', 'host.mjs'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['package.json', 'package.json']]) {
+for (const [source, destination] of [['index.js', 'host.mjs'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
   copyFileSync(resolve(repo, source), resolve(fixture, destination));
 }
-for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compatibility.test.mjs', 'managed-mcp.test.mjs']) {
+for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compatibility.test.mjs', 'managed-mcp.test.mjs', 'hooks.test.mjs']) {
   copyFileSync(resolve(testRoot, name), resolve(fixture, name));
 }
 const runtimeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh');
@@ -32,4 +32,16 @@ export function apply(ctx, config) {
   ctx.effect(() => () => ctx.fixtureMcp.stop(config.serverName));
 }
 `);
-await import(pathToFileURL(resolve(fixture, 'managed-mcp.test.mjs')).href);
+const hooksFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh-hooks-claude-code');
+mkdirSync(hooksFixture, { recursive: true });
+writeFileSync(resolve(hooksFixture, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-hooks-claude-code', type: 'module', exports: './index.js' }) + '\n');
+writeFileSync(resolve(hooksFixture, 'index.js'), `import { readFileSync } from 'node:fs';
+export const name = 'fixture-hook-bridge';
+export const inject = ['fixtureHooks'];
+export function apply(ctx, config) {
+  const content = JSON.parse(readFileSync(config.configPath, 'utf8'));
+  ctx.fixtureHooks.start(content);
+  ctx.effect(() => () => ctx.fixtureHooks.stop());
+}
+`);
+await import(pathToFileURL(resolve(fixture, 'hooks.test.mjs')).href);

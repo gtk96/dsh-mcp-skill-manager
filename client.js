@@ -112,6 +112,25 @@ function ManagerPage() {
   const [skillDescription, setSkillDescription] = React.useState("");
   const [skillWhenToUse, setSkillWhenToUse] = React.useState("");
   const [skillContent, setSkillContent] = React.useState("");
+  const hookRequest = React.useRef(0);
+  const hookWriteLock = React.useRef(false);
+  const [hooksCatalog, setHooksCatalog] = React.useState(null);
+  const [hooksBusy, setHooksBusy] = React.useState(false);
+  const [hooksError, setHooksError] = React.useState("");
+  const [hooksNotice, setHooksNotice] = React.useState("");
+  const [hookFormOpen, setHookFormOpen] = React.useState(false);
+  const [hookEditing, setHookEditing] = React.useState(null);
+  const [hookName, setHookName] = React.useState("");
+  const [hookEvent, setHookEvent] = React.useState("SessionStart");
+  const [hookMatcher, setHookMatcher] = React.useState("");
+  const [hookCommand, setHookCommand] = React.useState("");
+  const [hookTimeout, setHookTimeout] = React.useState("30");
+  const [hookConfirm, setHookConfirm] = React.useState(null);
+  const hookEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStart", "SubagentStop"];
+  const canEditHooks = compatibility?.runtimeVersion === "0.2.1-rc.2"
+    && compatibility?.writes?.hooks === true && hooksCatalog?.writable === true;
+  const hooksLocked = hooksBusy || hookWriteLock.current || writeCount > 0;
+  const hasMatcher = (event) => event !== "UserPromptSubmit" && event !== "Stop";
 
   function callHost(method, args = {}) {
     return requestHost(method, { ...args, sessionId });
@@ -137,7 +156,10 @@ function ManagerPage() {
         || !["tested", "unverified", "unknown"].includes(result.versionStatus)
         || !Array.isArray(result.testedRuntimeVersions) || !result.testedRuntimeVersions.every((version) => typeof version === "string")
         || !isRecord(result.capabilities) || !Object.values(result.capabilities).every((value) => typeof value === "boolean")
-        || !isRecord(result.writes) || typeof result.writes.mcp !== "boolean" || typeof result.writes.skills !== "boolean") {
+        || !isRecord(result.writes) || typeof result.writes.mcp !== "boolean" || typeof result.writes.skills !== "boolean"
+        || (result.writes.hooks !== undefined && typeof result.writes.hooks !== "boolean")
+        || (result.capabilities.hookCatalog !== undefined && typeof result.capabilities.hookCatalog !== "boolean")
+        || (result.capabilities.hookRuntime !== undefined && typeof result.capabilities.hookRuntime !== "boolean")) {
         throw new Error("兼容检查协议不匹配，请确认 Host 与 Client 插件版本一致；写入已禁用。");
       }
       checkContext(result);
@@ -147,6 +169,134 @@ function ManagerPage() {
     } finally {
       if (requestId === compatibilityRequest.current) setCompatibilityBusy(false);
     }
+  }
+
+  async function refreshHooks(fromWrite = false) {
+    if ((!fromWrite && hookWriteLock.current) || (!fromWrite && writeCount > 0)) return;
+    const requestId = ++hookRequest.current;
+    setHooksBusy(true);
+    setHooksCatalog(null);
+    setHooksError("");
+    setHookConfirm(null);
+    if (!fromWrite) { setHookFormOpen(false); setHookEditing(null); }
+    try {
+      const result = await callHost("hooks.list");
+      if (requestId !== hookRequest.current) return;
+      const validRevision = (revision) => typeof revision === "string" && revision.trim().length > 0;
+      if (!isRecord(result) || typeof result.writable !== "boolean" || !Array.isArray(result.events)
+        || result.events.length !== hookEvents.length || result.events.some((event) => !hookEvents.includes(event))
+        || new Set(result.events).size !== hookEvents.length || !Array.isArray(result.rules)
+        || result.rules.some((rule) => !isRecord(rule) || typeof rule.name !== "string" || !rule.name
+          || !hookEvents.includes(rule.event) || typeof rule.enabled !== "boolean"
+          || typeof rule.commandConfigured !== "boolean" || !validRevision(rule.revision)
+          || !Number.isInteger(rule.timeoutSec) || rule.timeoutSec < 1 || rule.timeoutSec > 600
+          || (rule.matcher !== undefined && typeof rule.matcher !== "string")
+          || (rule.command !== undefined))
+        || !isRecord(result.runtime) || !["disabled", "loading", "active", "failed", "unavailable"].includes(result.runtime.phase)
+        || !Number.isSafeInteger(result.runtime.enabledCount) || result.runtime.enabledCount < 0
+        || (result.runtime.error !== undefined && typeof result.runtime.error !== "string")) {
+        throw new Error("Hook 目录返回格式无效，当前写入已禁用。");
+      }
+      if (result.context?.kind !== "global") throw new Error("Hook 目录上下文不匹配，当前写入已禁用。");
+      checkContext(result);
+      setHooksCatalog(result);
+    } catch (error) {
+      if (requestId === hookRequest.current) {
+        setHooksCatalog(null);
+        setHooksError(errorText(error));
+      }
+    } finally {
+      if (requestId === hookRequest.current) setHooksBusy(false);
+    }
+  }
+
+  function editHook(rule) {
+    if (!canEditHooks || hooksLocked) return;
+    setHookEditing(rule);
+    setHookName(rule.name);
+    setHookEvent(rule.event);
+    setHookMatcher(rule.matcher || "");
+    setHookTimeout(String(rule.timeoutSec));
+    setHookCommand("");
+    setHookConfirm(null);
+    setHooksError("");
+    setHookFormOpen(true);
+  }
+
+  function createHook() {
+    if (!canEditHooks || hooksLocked) return;
+    setHookEditing(null);
+    setHookName("");
+    setHookEvent("SessionStart");
+    setHookMatcher("");
+    setHookTimeout("30");
+    setHookCommand("");
+    setHookConfirm(null);
+    setHooksError("");
+    setHookFormOpen(true);
+  }
+
+  async function writeHook(method, args, notice) {
+    if (!canEditHooks || hooksLocked) {
+      setHooksError("Hook 目录正在刷新或写入权限不可用，请刷新后重试。");
+      return;
+    }
+    hookWriteLock.current = true;
+    ++hookRequest.current;
+    setHooksBusy(true);
+    setHooksError("");
+    setHooksNotice("");
+    setWriteCount((count) => count + 1);
+    try {
+      const result = await callHost(method, args);
+      if (result?.saved === false) throw new Error("Hook 配置未保存，请刷新目录后重试。");
+      if (method !== "hooks.retry" && result?.saved !== true) throw new Error("Hook 写入结果不明确，请刷新目录核对后再操作。");
+      setHooksNotice(notice);
+      setHookFormOpen(false);
+      setHookConfirm(null);
+      await refreshHooks(true);
+    } catch (error) {
+      setHooksError(errorText(error));
+    } finally {
+      hookWriteLock.current = false;
+      setWriteCount((count) => count - 1);
+      setHooksBusy(false);
+    }
+  }
+
+  async function saveHook(event) {
+    event.preventDefault();
+    if (!canEditHooks || hooksLocked) return;
+    const timeoutSec = Number(hookTimeout);
+    if (!Number.isInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 600) {
+      setHooksError("超时时间必须是 1–600 的整数秒。");
+      return;
+    }
+    const command = hookCommand.trim();
+    if (!hookEditing && !command) {
+      setHooksError("新建规则必须填写命令。");
+      return;
+    }
+    const definition = { event: hookEvent, timeoutSec };
+    if (hasMatcher(hookEvent) && hookMatcher.trim()) definition.matcher = hookMatcher.trim();
+    if (command) definition.command = command;
+    await writeHook("hooks.upsert", { name: hookName.trim(), definition,
+      ...(hookEditing ? { expectedRevision: hookEditing.revision } : {}) },
+    hookEditing ? `Hook “${hookName.trim()}” 已保存；运行状态请查看下方状态。` : `Hook “${hookName.trim()}” 已保存为停用；需要手动启用。`);
+  }
+
+  async function changeHookEnabled(rule, enabled) {
+    await writeHook("hooks.set-enabled", { name: rule.name, enabled, expectedRevision: rule.revision },
+      enabled ? `Hook “${rule.name}” 已保存为启用；“已加载”表示桥接器加载，不代表命令已执行。`
+        : `Hook “${rule.name}” 已保存为停用。`);
+  }
+
+  async function removeHook(rule) {
+    await writeHook("hooks.remove", { name: rule.name, expectedRevision: rule.revision }, `Hook “${rule.name}” 已移除。`);
+  }
+
+  async function retryHooks() {
+    await writeHook("hooks.retry", {}, "已请求重新加载 Hooks；请查看最新运行状态。");
   }
 
   async function refreshManaged(refreshDiscovery = false) {
@@ -281,6 +431,10 @@ function ManagerPage() {
   }
 
   React.useEffect(() => {
+    if (tab === "hooks" && !hooksCatalog && !hooksBusy && !hooksError) void refreshHooks();
+  }, [tab]);
+
+  React.useEffect(() => {
     void refreshCompatibility();
     void refreshRuntime();
     void refreshManaged(true);
@@ -291,6 +445,7 @@ function ManagerPage() {
       ++runtimeRequest.current;
       ++skillRequest.current;
       ++bodyRequest.current;
+      ++hookRequest.current;
     };
   }, []);
 
@@ -480,6 +635,83 @@ function ManagerPage() {
         h("pre", { className: "dsh-msm-pre" }, selectedSkill.content || "（正文为空）")) : null);
   }
 
+  const hookRuntimeLabel = { disabled: "无启用规则", loading: "桥接器加载中", active: "桥接器已加载", failed: "加载失败", unavailable: "官方模块不可用" };
+  const hookPhaseLabel = (phase) => hookRuntimeLabel[phase] || "未知";
+
+  const hookEventOptions = hookEvents.map((event) => h("option", { key: event, value: event }, event));
+  function hookConfirmButton(rule) {
+    if (!canEditHooks || hooksLocked) return null;
+    const enabling = !rule.enabled;
+    if (hookConfirm?.name === rule.name && hookConfirm.action === (enabling ? "enable" : "disable")) {
+      return h(React.Fragment, null,
+        h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: hooksLocked, onClick: () => void changeHookEnabled(rule, enabling) }, enabling ? "确认启用" : "确认停用"),
+        h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm(null) }, "取消"));
+    }
+    return h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm({ name: rule.name, action: enabling ? "enable" : "disable" }) }, enabling ? "启用" : "停用");
+  }
+  function hookRemoveButton(rule) {
+    if (!canEditHooks || hooksLocked) return null;
+    if (hookConfirm?.name === rule.name && hookConfirm.action === "remove") {
+      return h(React.Fragment, null,
+        h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: hooksLocked, onClick: () => void removeHook(rule) }, "确认移除"),
+        h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm(null) }, "取消"));
+    }
+    return h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", onClick: () => setHookConfirm({ name: rule.name, action: "remove" }) }, "移除");
+  }
+  function renderHooks() {
+    const rules = hooksCatalog?.rules || [];
+    const runtime = hooksCatalog?.runtime;
+    return h("section", { className: "dsh-msm-panel" },
+      h("div", { className: "dsh-msm-row" },
+        h(Field, { label: "DSH Hook 规则", hint: "仅管理本 Profile 内由官方桥接器执行的命令 Hook；不读取或修改外部 Claude Code 配置。" }),
+        h("button", { className: "dsh-msm-button", type: "button", disabled: hooksLocked, onClick: () => void refreshHooks() }, hooksBusy ? "读取中…" : "刷新 Hooks"),
+        h("button", { className: "dsh-msm-button", type: "button", disabled: !canEditHooks || hooksLocked, onClick: () => void retryHooks() }, "重新加载"),
+        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: !canEditHooks || hooksLocked, onClick: createHook }, "新建 Hook 规则")),
+      runtime ? h("div", { className: "dsh-msm-muted" },
+        `运行状态：${hookPhaseLabel(runtime.phase)} · 启用规则：${runtime.enabledCount}。官方桥接器已加载不代表规则已执行；新规则默认停用。`) : null,
+      runtime?.error ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, runtime.error) : null,
+      hooksError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, hooksError) : null,
+      hooksNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, hooksNotice) : null,
+      !hooksCatalog && hooksBusy ? h("div", { className: "dsh-msm-muted" }, "正在读取 Hook 目录…") : null,
+      hookFormOpen ? h("form", { className: "dsh-msm-card", "aria-label": hookEditing ? "编辑 Hook" : "新建 Hook", onSubmit: saveHook },
+        h(Field, { label: "规则名称", hint: "1–64 位小写字母、数字、下划线或短横线；创建后不可修改。" },
+          h("input", { className: "dsh-msm-input", "aria-label": "Hook 规则名称", value: hookName, disabled: !!hookEditing, required: true, onChange: (event) => setHookName(event.currentTarget.value) })),
+        h(Field, { label: "触发事件" }, h("select", { className: "dsh-msm-select", "aria-label": "Hook 触发事件", value: hookEvent, onChange: (event) => { setHookEvent(event.currentTarget.value); if (!hasMatcher(event.currentTarget.value)) setHookMatcher(""); } }, hookEventOptions)),
+        hasMatcher(hookEvent) ? h(Field, { label: "matcher（可选）", hint: "留空或 * 匹配全部；工具事件按工具名，SessionStart 按来源。" },
+          h("input", { className: "dsh-msm-input", "aria-label": "Hook matcher", value: hookMatcher, onChange: (event) => setHookMatcher(event.currentTarget.value) })) : null,
+        h(Field, { label: hookEditing ? "命令（留空保留现有命令）" : "命令", hint: "命中事件时将通过官方桥接器执行；请勿在命令中写入凭据。" },
+          h("textarea", { className: "dsh-msm-textarea dsh-msm-textarea-short", "aria-label": "Hook 命令", value: hookCommand, required: !hookEditing, spellCheck: false, onChange: (event) => setHookCommand(event.currentTarget.value) })),
+        h(Field, { label: "超时（秒，1–600）" },
+          h("input", { className: "dsh-msm-input", "aria-label": "Hook 超时秒数", type: "number", min: 1, max: 600, value: hookTimeout, required: true, onChange: (event) => setHookTimeout(event.currentTarget.value) })),
+        h("div", { className: "dsh-msm-actions" },
+          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: !canEditHooks || hooksLocked }, hooksLocked ? "提交中…" : "保存规则"),
+          h("button", { className: "dsh-msm-button", type: "button", onClick: () => { setHookFormOpen(false); setHookConfirm(null); } }, "关闭表单"))) : null,
+      rules.length ? renderHookRules(rules) : renderHookEmpty());
+  }
+
+  function renderHookRules(rules) {
+    return h("div", { className: "dsh-msm-list" }, rules.map(renderHookRule));
+  }
+
+  function renderHookEmpty() {
+    return h("div", { className: "dsh-msm-empty" }, hooksBusy && !hooksCatalog ? "正在读取 Hook 目录…"
+      : hooksError ? "Hook 目录读取失败；不能据此判断规则数量。"
+      : "当前 Profile 没有托管 Hook 规则。");
+  }
+
+  function renderHookRule(rule) {
+    const summary = h("div", null,
+      h("h3", { className: "dsh-msm-card-title" }, rule.name),
+      h("div", { className: "dsh-msm-muted" }, `${rule.event}${rule.matcher ? ` · matcher: ${rule.matcher}` : ""} · 超时 ${rule.timeoutSec} 秒 · 命令${rule.commandConfigured ? "已配置" : "未配置"}`));
+    const actions = h("div", { className: "dsh-msm-actions" },
+      rule.enabled ? h("span", { className: "dsh-msm-success" }, "已启用") : h("span", { className: "dsh-msm-muted" }, "已停用"),
+      h("button", { className: "dsh-msm-button", type: "button", disabled: !canEditHooks || hooksLocked, onClick: () => editHook(rule) }, "编辑"),
+      hookConfirmButton(rule),
+      hookRemoveButton(rule));
+    return h("article", { className: "dsh-msm-card", key: rule.name },
+      h("div", { className: "dsh-msm-card-header" }, summary, actions));
+  }
+
   return h("main", { className: "dsh-msm-page" },
     h("header", { className: "dsh-msm-header" },
       h("div", null,
@@ -494,18 +726,19 @@ function ManagerPage() {
         h("div", null, `DSH：${compatibility.runtimeVersion || "无法识别"} · 插件：${compatibility.pluginVersion}`),
         h("div", { className: "dsh-msm-muted" }, `已做隔离回归的 DSH 版本：${compatibility.testedRuntimeVersions.join("、") || "无"}。安装范围不等于已验证版本。`),
         h("div", { role: "status", className: "dsh-msm-notice" }, compatibility.versionStatus === "tested"
-          ? `版本匹配隔离回归基线；配置写入${canEditMcp ? "已启用" : "已禁用"}，Runtime Skill 写入${canEditSkills ? "已启用" : "已禁用"}。接口检查仅确认方法存在，不代表外部 MCP 已连接。`
+          ? `版本匹配隔离回归基线；配置写入${canEditMcp ? "已启用" : "已禁用"}，Runtime Skill 写入${canEditSkills ? "已启用" : "已禁用"}，Hook 写入${canEditHooks ? "已启用" : "已禁用"}。接口检查仅确认方法存在，不代表外部 MCP 已连接。`
           : "运行版本未验证或无法识别，配置及 Runtime Skill 操作保持只读。"),
         h("details", null,
           h("summary", null, "接口能力"),
-          Object.entries({ mcpCatalog: "MCP 配置目录", mcpDiscovery: "工具目录", skillCatalog: "Skill 目录与正文", configEdit: "配置编辑", runtimeSkills: "Runtime Skill 注册" })
+          Object.entries({ mcpCatalog: "MCP 配置目录", mcpDiscovery: "工具目录", skillCatalog: "Skill 目录与正文", configEdit: "配置编辑", runtimeSkills: "Runtime Skill 注册", hookCatalog: "Hook 目录", hookRuntime: "Hook 桥接器运行环境" })
             .map(([key, label]) => h("div", { className: "dsh-msm-muted", key }, `${label}：${compatibility.capabilities[key] === true ? "接口可用" : "接口缺失"}`))))
         : compatibilityBusy ? h("div", { className: "dsh-msm-muted" }, "正在检查版本和接口，写入暂不可用。") : null),
     writeCount ? h("div", { className: "dsh-msm-notice", role: "status" }, "正在提交操作…") : null,
     h("nav", { className: "dsh-msm-tabs", role: "tablist", "aria-label": "管理类型" },
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "mcp", onClick: () => setTab("mcp") }, "MCP Servers"),
+      h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "hooks", onClick: () => setTab("hooks") }, "Hooks"),
       h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "skills", onClick: () => setTab("skills") }, "Skills")),
-    tab === "mcp" ? renderMcp() : renderSkills());
+    tab === "mcp" ? renderMcp() : tab === "hooks" ? renderHooks() : renderSkills());
 }
 
 return ManagerPage;

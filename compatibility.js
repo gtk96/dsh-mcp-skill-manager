@@ -39,6 +39,10 @@ export function createCompatibility(ctx, serviceFor, runtimeReader = readRuntime
       runtimeSkills: hasMethods(skills, ['snapshot', 'get']) && hasMethods(ctx.get('skills'), ['register']),
       sessionSelection: hasMethods(ctx.get('agents'), ['list', 'get']),
       presetScope: hasMethods(ctx.get('agentPresets'), ['serviceFor', 'composedPreset']),
+      hookCatalog: hasMethods(configEditor, ['configuration']),
+      hookRuntime: hasMethods(ctx.get('shell'), ['resolve', 'execute'])
+        && hasMethods(ctx.get('sessionProjections'), ['stateOf'])
+        && hasMethods(ctx.get('workingDirectory'), ['get', 'ensure']),
     };
     const tested = versionStatus === 'tested';
     return {
@@ -49,7 +53,7 @@ export function createCompatibility(ctx, serviceFor, runtimeReader = readRuntime
       testedRuntimeVersions: [...testedRuntimeVersions],
       installRange: manifest.peerDependencies['@deepseek-ai/dsh'],
       capabilities,
-      writes: { mcp: tested && capabilities.configEdit, skills: tested && capabilities.runtimeSkills },
+      writes: { mcp: tested && capabilities.configEdit, skills: tested && capabilities.runtimeSkills, hooks: runtimeVersion === '0.2.1-rc.2' && capabilities.configEdit },
       checks: 'method-presence-only',
     };
   }

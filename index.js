@@ -3,6 +3,7 @@ import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
 import { createManagedMcp, ManagedMcpError } from './managed-mcp.js';
+import { createManagedHooks, ManagedHooksError } from './managed-hooks.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -14,6 +15,7 @@ export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),
   managedServers: z.dict(z.any()).default({}).volatile(),
+  managedHooks: z.dict(z.any()).default({}).volatile(),
 });
 
 const secretName = /secret|token|password|credential|authorization|api.?key/i;
@@ -164,7 +166,7 @@ function tool(name, description, parameters, execute) {
       try {
         return await execute(args, exec);
       } catch (error) {
-        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError) throw error;
+        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError || error instanceof ManagedHooksError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -197,6 +199,7 @@ export function apply(ctx, config = {}) {
   const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx, discovery.serviceFor);
   const managedMcp = createManagedMcp(ctx, config, compatibility);
+  const managedHooks = createManagedHooks(ctx, config, compatibility);
   const discoverMcp = async (target, signal) => {
     const result = await discovery.mcp(target, signal);
     result.configured.push(...managedMcp.catalog().servers);
@@ -422,13 +425,42 @@ export function apply(ctx, config = {}) {
     },
   );
   const disposeSkillTool = ctx.tools.register(skillsTool);
+  const hooksTool = tool(
+    'dsh_manage_hooks',
+    'Manage this Profile’s DSH command Hook rules. New rules stay disabled; list returns revisions and bridge load status without command contents.',
+    {
+      action: { type: 'string', required: true, enum: ['list', 'upsert', 'set-enabled', 'remove', 'retry'] },
+      name: { type: 'string', description: 'Rule name for upsert, set-enabled or remove; 1–64 lowercase letters, digits, underscores or hyphens.' },
+      definition: { type: 'object', additionalProperties: false, properties: {
+        event: { type: 'string', enum: ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop'] },
+        matcher: { type: 'string', description: 'Optional matcher; UserPromptSubmit and Stop do not accept one.' },
+        command: { type: 'string', description: 'Required for a new rule; omit or leave empty to retain an existing command. Use environment references rather than credentials.' },
+        timeoutSec: { type: 'integer', minimum: 1, maximum: 600 },
+      }, description: 'Rule fields for upsert. Rules are enabled separately with set-enabled.' },
+      enabled: { type: 'boolean', description: 'Required for set-enabled. Enabling permits matching events to execute the saved command.' },
+      expectedRevision: { type: 'string', description: 'Current revision from list; required to edit, toggle or remove an existing rule.' },
+    },
+    async (args, exec) => {
+      if (args.sessionId !== undefined && (typeof args.sessionId !== 'string' || args.sessionId.trim())) throw new ManagerError('Hooks are managed in the Profile global scope only.');
+      exec.signal.throwIfAborted();
+      const action = requireString(args.action, 'action');
+      const handlers = { upsert: managedHooks.upsert, 'set-enabled': managedHooks.setEnabled, remove: managedHooks.remove, retry: managedHooks.retry };
+      let result;
+      if (action === 'list') result = await managedHooks.list(exec.signal);
+      else if (Object.hasOwn(handlers, action)) result = await handlers[action](args, exec.signal);
+      else throw new ManagerError('Unknown Hook management action');
+      exec.signal.throwIfAborted();
+      return { ...result, context: discovery.view({ sessionId: '' }).context };
+    },
+  );
+  const disposeHooksTool = ctx.tools.register(hooksTool);
   const handleRpc = async (method, payload, signal) => {
     try {
       if (payload !== undefined && !isRecord(payload)) throw new ManagerError('RPC arguments must be an object');
       const args = isRecord(payload) ? payload : {};
       if (args.sessionId !== undefined && typeof args.sessionId !== 'string') throw new ManagerError('sessionId must be a string');
       signal.throwIfAborted();
-      const mutation = ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method);
+      const mutation = ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method);
       if (mutation && args.sessionId?.trim()) throw new ManagerError('This operation changes the Profile global configuration or Runtime Skills; select the Profile global view first.');
       const target = method.startsWith('skills.') ? discovery.view(args) : undefined;
       const exec = { signal, agent: target?.agent };
@@ -464,6 +496,13 @@ export function apply(ctx, config = {}) {
           break;
         case 'mcp.remove':
           value = await mcpTool.execute({ ...args, action: 'remove' }, exec);
+          break;
+        case 'hooks.list':
+        case 'hooks.upsert':
+        case 'hooks.set-enabled':
+        case 'hooks.remove':
+        case 'hooks.retry':
+          value = await hooksTool.execute({ ...args, action: method.slice('hooks.'.length) }, { signal });
           break;
         case 'skills.list': {
           const result = await skillsTool.execute({ action: 'list' }, exec);
@@ -513,7 +552,7 @@ export function apply(ctx, config = {}) {
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError;
+      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError || error instanceof ManagedHooksError;
       return {
         ok: false,
         error: {
@@ -524,7 +563,7 @@ export function apply(ctx, config = {}) {
       };
     }
   };
-  const rpcMethods = ['mcp.retry', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister'];
+  const rpcMethods = ['mcp.retry', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
   ctx.inject(['connection'], (webCtx) => {
     webCtx.effect(function* () {
     for (const method of rpcMethods) {
@@ -557,6 +596,7 @@ export function apply(ctx, config = {}) {
       active = false;
       disposeMcpTool();
       disposeSkillTool();
+      disposeHooksTool();
       for (const dispose of runtimeSkills.values()) dispose();
       runtimeSkills.clear();
     };

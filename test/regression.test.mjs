@@ -23,7 +23,7 @@ const progress = resolve(root, 'test-progress.log');
 writeFileSync(progress, 'isolated test module loaded\n');
 const mark = (message) => appendFileSync(progress, message + '\n');
 const hashes = {};
-for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['package.json', 'package.json']]) {
+for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
   const copy = readFileSync(resolve(root, fixture));
   assert.deepEqual(copy, readFileSync(resolve(repo, source)), 'Tested fixture must match the actual plugin source');
   hashes[source] = createHash('sha256').update(copy).digest('hex');
@@ -105,9 +105,10 @@ async function fixture(options = {}) {
         trace.edits++;
         target.options.config = clone(next);
         updateVolatile(fiber.config.managedServers, plugin.Config(next).managedServers);
+        updateVolatile(fiber.config.managedHooks, plugin.Config(next).managedHooks);
         const self = Object.create(fiber.ctx);
         self[Context.filter] = (owner) => owner.fiber === fiber;
-        fiber.ctx.emit(self, 'loader/volatile-update', [['managedServers']]);
+        fiber.ctx.emit(self, 'loader/volatile-update', [['managedServers'], ['managedHooks']]);
         return;
       }
       assert.equal(target, entry);
@@ -185,11 +186,21 @@ async function fixture(options = {}) {
     start(config) { bridgeRuns.set(config.serverName, config); bridgeTrace.starts.push(config.serverName); },
     stop(name) { bridgeRuns.delete(name); bridgeTrace.stops.push(name); },
   });
+  const hookTrace = { starts: [], stops: 0, shellCalls: 0 };
+  ctx.reflect.provide('fixtureHooks', {
+    start(content) { hookTrace.starts.push(clone(content)); },
+    stop() { hookTrace.stops++; },
+  });
+  if (options.hooks) {
+    ctx.reflect.provide('shell', { resolve() {}, async execute() { hookTrace.shellCalls++; throw new Error('Fixture must not execute Hook commands'); } });
+    ctx.reflect.provide('sessionProjections', { stateOf() { return {}; } });
+    ctx.reflect.provide('workingDirectory', { get() { return '/fixture'; }, async ensure() { return '/fixture'; } });
+  }
   let removeConnection;
   if (options.web !== false) removeConnection = ctx.reflect.provide('connection', connection);
-  const fiber = await ctx.plugin(plugin, { mcpConfigPath: 'maps.A', managedServers: options.managedServers ?? {} });
-  if (options.managed) {
-    managerEntry = { id: 'include:mcp-skill-manager', fiber, options: { id: 'mcp-skill-manager', name: 'dsh-mcp-skill-manager', config: { mcpConfigPath: 'maps.A', managedServers: clone(options.managedServers ?? {}) } } };
+  const fiber = await ctx.plugin(plugin, { mcpConfigPath: 'maps.A', managedServers: options.managedServers ?? {}, managedHooks: options.managedHooks ?? {} });
+  if (options.managed || options.hooks) {
+    managerEntry = { id: 'include:mcp-skill-manager', fiber, options: { id: 'mcp-skill-manager', name: 'dsh-mcp-skill-manager', config: { mcpConfigPath: 'maps.A', managedServers: clone(options.managedServers ?? {}), managedHooks: clone(options.managedHooks ?? {}) } } };
     rows.push({ entry: managerEntry, inherited: {}, override: {} });
   }
   await tick();
@@ -212,7 +223,7 @@ async function fixture(options = {}) {
     return envelope.result;
   };
   return {
-    ctx, fiber, tools, routes, runtime, trace, entry, inherited, rows, skills, agents, managerEntry, bridgeRuns, bridgeTrace,
+    ctx, fiber, tools, routes, runtime, trace, entry, inherited, rows, skills, agents, managerEntry, bridgeRuns, bridgeTrace, hookTrace,
     call, rpc,
     async attachWeb() { removeConnection = ctx.reflect.provide('connection', connection); await tick(); await tick(); },
     async detachWeb() { if (removeConnection) { await removeConnection(); removeConnection = undefined; } await tick(); },
@@ -284,7 +295,7 @@ async function page(t, host, intercept, sessionRows = {}) {
     },
     alerts() { return renderer.root.findAllByProps({ role: 'alert' }).map(text); },
     content() { return text(renderer.root); },
-    mutations() { return requests.filter(({ method }) => ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister'].includes(method)); },
+    mutations() { return requests.filter(({ method }) => ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method)); },
   };
 }
 
@@ -292,7 +303,7 @@ await check('Host activates without Web and registers its tools using real Cordi
   const host = await fixture({ web: false });
   t.after(() => host.close());
   assert.equal(host.fiber.state, 2);
-  assert.deepEqual([...host.tools.keys()].sort(), ['dsh_manage_mcp_servers', 'dsh_manage_skills']);
+  assert.deepEqual([...host.tools.keys()].sort(), ['dsh_manage_hooks', 'dsh_manage_mcp_servers', 'dsh_manage_skills']);
   assert.equal(host.routes.size, 0);
 });
 
@@ -300,12 +311,12 @@ await check('Optional Web arrival and removal do not stop Host tools or leak rou
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 13);
+  assert.equal(host.routes.size, 18);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
-  assert.equal(host.tools.size, 2);
+  assert.equal(host.tools.size, 3);
   await host.attachWeb();
-  assert.equal(host.routes.size, 13);
+  assert.equal(host.routes.size, 18);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {

@@ -123,6 +123,25 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
     if (!alive) return;
     const desired = definitions();
     let bridgeAttempt;
+    // A persisted definition must not start a command on a runtime this plugin has not verified.
+    // A caller that supplies no report is treated as already authorized by its own composition.
+    let writable = true;
+    if (typeof compatibility?.report === 'function') {
+      try { writable = (await compatibility.report()).writes.mcp === true; } catch { writable = false; }
+    }
+    if (!alive) return;
+    if (!writable) {
+      for (const [name, connection] of connections) {
+        try {
+          await dispose(connection);
+          connections.delete(name);
+        } catch {
+          connection.phase = 'cleanup-failed';
+          connection.error = '本地 MCP 连接未能完全释放；请重启后再试。';
+        }
+      }
+      return;
+    }
     for (const [name, connection] of connections) {
       if (own(desired, name) && isDeepStrictEqual(connection.raw, desired[name]) && connection.phase !== 'cleanup-failed') continue;
       try {
@@ -185,14 +204,25 @@ export function createManagedMcp(ctx, config, compatibility, readBridge = () => 
   function catalog() {
     let writable = true;
     try { owner(); } catch { writable = false; }
+    // Every persisted declaration is listed, including ones this runtime has not (or must not) start,
+    // so a configuration is never invisible just because it is not running.
+    const declared = definitions();
+    const names = new Set([...Object.keys(record(declared) ? declared : {}), ...connections.keys()]);
     return {
       writable,
-      servers: [...connections].map(([serverName, connection]) => ({
-        kind: 'managed-config', serverName, transport: connection.transport,
-        phase: ['failed', 'cleanup-failed'].includes(connection.phase) || connection.fiber?.state === 3 ? 'failed' : 'declared',
-        ...(connection.error ? { error: connection.error } : {}),
-        connectionState: 'unknown',
-      })),
+      servers: [...names].map((serverName) => {
+        const connection = connections.get(serverName);
+        if (!connection) {
+          return { kind: 'managed-config', serverName, transport: declared?.[serverName]?.transport, phase: 'not-started', connectionState: 'unknown' };
+        }
+        return {
+          kind: 'managed-config', serverName, transport: connection.transport,
+          ...(connection.fiber ? { fiberState: connection.fiber.state } : {}),
+          phase: ['failed', 'cleanup-failed'].includes(connection.phase) || connection.fiber?.state === 3 ? 'failed' : 'declared',
+          ...(connection.error ? { error: connection.error } : {}),
+          connectionState: 'unknown',
+        };
+      }),
     };
   }
   async function add(args, signal) {

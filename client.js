@@ -197,14 +197,16 @@ function ManagerPage() {
         || (result.runtime.error !== undefined && typeof result.runtime.error !== "string")) {
         throw new Error("Hook 目录返回格式无效，当前写入已禁用。");
       }
-      if (result.context?.kind !== "global") throw new Error("Hook 目录上下文不匹配，当前写入已禁用。");
+      if (result.context?.kind !== "profile" || result.context.sessionId !== "") throw new Error("Hook 目录上下文不匹配，当前写入已禁用。");
       checkContext(result);
       setHooksCatalog(result);
+      return true;
     } catch (error) {
       if (requestId === hookRequest.current) {
         setHooksCatalog(null);
         setHooksError(errorText(error));
       }
+      return false;
     } finally {
       if (requestId === hookRequest.current) setHooksBusy(false);
     }
@@ -242,7 +244,6 @@ function ManagerPage() {
       return;
     }
     hookWriteLock.current = true;
-    ++hookRequest.current;
     setHooksBusy(true);
     setHooksError("");
     setHooksNotice("");
@@ -251,10 +252,12 @@ function ManagerPage() {
       const result = await callHost(method, args);
       if (result?.saved === false) throw new Error("Hook 配置未保存，请刷新目录后重试。");
       if (method !== "hooks.retry" && result?.saved !== true) throw new Error("Hook 写入结果不明确，请刷新目录核对后再操作。");
-      setHooksNotice(notice);
       setHookFormOpen(false);
       setHookConfirm(null);
-      await refreshHooks(true);
+      const reloaded = await refreshHooks(true);
+      // The write is already durable, so a failed catalogue reload must not read as a failed save.
+      if (reloaded) setHooksNotice(notice);
+      else setHooksNotice(`${notice} 已持久化，但目录重新读取失败，运行状态未知；请点「刷新 Hooks」重试。`);
     } catch (error) {
       setHooksError(errorText(error));
     } finally {
@@ -402,6 +405,8 @@ function ManagerPage() {
       if (requestId === skillRequest.current) {
         ++catalogGeneration.current;
         setCatalogRevision(catalogGeneration.current);
+        // A failed read must not leave a stale catalogue that still offers body reads and unregistration.
+        setSkills([]);
         setSkillsError(errorText(error));
       }
     } finally {

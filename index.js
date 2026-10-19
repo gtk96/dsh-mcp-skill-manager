@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
-import { createManagedMcp, ManagedMcpError } from './managed-mcp.js';
+import { createManagedMcp, normalizeServer, ManagedMcpError } from './managed-mcp.js';
 import { createManagedHooks, ManagedHooksError } from './managed-hooks.js';
 
 export const name = 'mcp-skill-manager';
@@ -212,42 +212,43 @@ export function apply(ctx, config = {}) {
   const runtimeProvider = `${name}:${randomUUID()}`;
   const mcpTool = tool(
     'dsh_manage_mcp_servers',
-    'Discover MCP-named tools and native configuration sources in the calling Agent scope, or edit an explicit configuration map. Discovery reports connectivity as unknown.',
+    'Discover MCP-named tools and native configuration sources in the calling Agent scope, or read an explicit configuration map. Discovery reports connectivity as unknown. MCP configuration is changed only by a person in the settings page.',
     {
-      action: { type: 'string', required: true, enum: ['discover', 'list', 'upsert', 'remove'] },
-      entryId: { type: 'string', description: 'Entry id, patch id, or name returned by the list action.' },
+      action: { type: 'string', required: true, enum: ['discover', 'list'] },
       configPath: { type: 'string', description: 'Dot path to the MCP server map, for example the path configured for this plugin.' },
-      name: { type: 'string', description: 'MCP server key for upsert or remove.' },
-      definition: { type: 'object', additionalProperties: true, description: 'MCP server configuration object for upsert.' },
-      expectedRevision: { type: 'string', description: 'For replacing or removing an existing Server, pass its revision from list; save rejects a definition changed since that read.' },
     },
     async (args, exec) => {
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
+      if (action !== 'discover' && action !== 'list') throw new ManagerError('MCP 配置只能由人在设置页修改；此工具只提供发现与读取。');
       const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
         ? args.configPath
         : config.mcpConfigPath;
-      if (action === 'discover' || (action === 'list' && !configuredPath?.trim())) {
+      if (action === 'discover' || !configuredPath?.trim()) {
         return { action, ...await discoverMcp(discovery.view({}, exec.agent), exec.signal) };
       }
-      if (action === 'upsert' || action === 'remove') await compatibility.assertWrite('mcp', exec.signal, exec.agent);
+      const parts = pathParts(configuredPath);
+      return {
+        action,
+        configPath: parts.join('.'),
+        entries: ctx.configEditor.configuration().map((row) => {
+          const servers = getAt(effectiveConfig(row), parts);
+          if (!isRecord(servers)) return undefined;
+          return {
+            entry: entrySummary(row.entry),
+            servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))])),
+          };
+        }).filter(Boolean),
+      };
+    },
+  );
+  /** Shared MCP map writer for the settings page; the Agent tool refuses these actions before reaching it. */
+  async function mcpWrite(action, args, exec) {
+      const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
+        ? args.configPath
+        : config.mcpConfigPath;
+      await compatibility.assertWrite('mcp', exec.signal, exec.agent);
       const rows = ctx.configEditor.configuration();
-      if (action === 'list') {
-        const parts = pathParts(configuredPath);
-        return {
-          action,
-          configPath: parts.join('.'),
-          entries: rows.map((row) => {
-            const servers = getAt(effectiveConfig(row), parts);
-            if (!isRecord(servers)) return undefined;
-            return {
-              entry: entrySummary(row.entry),
-              servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))])),
-            };
-          }).filter(Boolean),
-        };
-      }
-
       const entryId = requireString(args.entryId, 'entryId');
       const parts = pathParts(configuredPath);
       const matches = rows.filter(({ entry }) => entryKeys(entry).includes(entryId));
@@ -275,6 +276,11 @@ export function apply(ctx, config = {}) {
 
       let inheritedRemains = false;
       exec.signal.throwIfAborted();
+      // The page's generic map writer accepts any server JSON, so the credential rule is enforced before any write.
+      if (action === 'upsert' && isRecord(args.definition)
+        && (args.definition.transport === 'stdio' || args.definition.transport === 'streamable-http')) {
+        normalizeServer(serverName, args.definition);
+      }
       await ctx.configEditor.edit(row.entry, (current, inherited) => {
         exec.signal.throwIfAborted();
         if (action === 'upsert') {
@@ -290,6 +296,7 @@ export function apply(ctx, config = {}) {
           } else if (args.expectedRevision !== undefined) {
             throw new ManagerError(`Server ${serverName} changed or was removed; refresh the catalog before replacing it`);
           }
+          // The caller's revision check stays inside the callback; definition shape was validated above.
           return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
             servers[serverName] = args.definition;
             return servers;
@@ -322,8 +329,7 @@ export function apply(ctx, config = {}) {
         changed: true,
         ...(action === 'remove' && inheritedRemains ? { inheritedRemains: true } : {}),
       };
-    },
-  );
+  }
   const disposeMcpTool = ctx.tools.register(mcpTool);
 
   const skillsTool = tool(
@@ -427,33 +433,33 @@ export function apply(ctx, config = {}) {
   const disposeSkillTool = ctx.tools.register(skillsTool);
   const hooksTool = tool(
     'dsh_manage_hooks',
-    'Manage this Profile’s DSH command Hook rules. New rules stay disabled; list returns revisions and bridge load status without command contents.',
+    'List this Profile’s DSH command Hook rules with their revisions and bridge load status, without command contents. Hook rules are changed only by a person in the MCP & Skills settings page, because enabling one runs commands on this machine.',
     {
-      action: { type: 'string', required: true, enum: ['list', 'upsert', 'set-enabled', 'remove', 'retry'] },
-      name: { type: 'string', description: 'Rule name for upsert, set-enabled or remove; 1–64 lowercase letters, digits, underscores or hyphens.' },
-      definition: { type: 'object', additionalProperties: false, properties: {
-        event: { type: 'string', enum: ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop'] },
-        matcher: { type: 'string', description: 'Optional matcher; UserPromptSubmit and Stop do not accept one.' },
-        command: { type: 'string', description: 'Required for a new rule; omit or leave empty to retain an existing command. Use environment references rather than credentials.' },
-        timeoutSec: { type: 'integer', minimum: 1, maximum: 600 },
-      }, description: 'Rule fields for upsert. Rules are enabled separately with set-enabled.' },
-      enabled: { type: 'boolean', description: 'Required for set-enabled. Enabling permits matching events to execute the saved command.' },
-      expectedRevision: { type: 'string', description: 'Current revision from list; required to edit, toggle or remove an existing rule.' },
+      action: { type: 'string', required: true, enum: ['list'] },
     },
     async (args, exec) => {
-      if (args.sessionId !== undefined && (typeof args.sessionId !== 'string' || args.sessionId.trim())) throw new ManagerError('Hooks are managed in the Profile global scope only.');
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
-      const handlers = { upsert: managedHooks.upsert, 'set-enabled': managedHooks.setEnabled, remove: managedHooks.remove, retry: managedHooks.retry };
-      let result;
-      if (action === 'list') result = await managedHooks.list(exec.signal);
-      else if (Object.hasOwn(handlers, action)) result = await handlers[action](args, exec.signal);
-      else throw new ManagerError('Unknown Hook management action');
+      if (action !== 'list') throw new ManagerError('Hook rules are changed only from the settings page; this tool is read-only.');
+      const result = await managedHooks.list(exec.signal);
       exec.signal.throwIfAborted();
       return { ...result, context: discovery.view({ sessionId: '' }).context };
     },
   );
   const disposeHooksTool = ctx.tools.register(hooksTool);
+  /** Settings-page RPC is the only writer path; the Agent tool stays read-only. */
+  const hooksRpc = async (action, args, signal) => {
+    signal.throwIfAborted();
+    let result;
+    if (action === 'list') result = await managedHooks.list(signal);
+    else if (action === 'upsert') result = await managedHooks.upsert(args, signal);
+    else if (action === 'set-enabled') result = await managedHooks.setEnabled(args, signal);
+    else if (action === 'remove') result = await managedHooks.remove(args, signal);
+    else if (action === 'retry') result = await managedHooks.retry(args, signal);
+    else throw new ManagerError('Unknown Hook management action');
+    signal.throwIfAborted();
+    return { ...result, context: discovery.view({ sessionId: '' }).context };
+  };
   const handleRpc = async (method, payload, signal) => {
     try {
       if (payload !== undefined && !isRecord(payload)) throw new ManagerError('RPC arguments must be an object');
@@ -492,17 +498,17 @@ export function apply(ctx, config = {}) {
           value = readMcpCatalog(ctx, config, args, revisionKey);
           break;
         case 'mcp.upsert':
-          value = await mcpTool.execute({ ...args, action: 'upsert' }, exec);
+          value = await mcpWrite('upsert', args, exec);
           break;
         case 'mcp.remove':
-          value = await mcpTool.execute({ ...args, action: 'remove' }, exec);
+          value = await mcpWrite('remove', args, exec);
           break;
         case 'hooks.list':
         case 'hooks.upsert':
         case 'hooks.set-enabled':
         case 'hooks.remove':
         case 'hooks.retry':
-          value = await hooksTool.execute({ ...args, action: method.slice('hooks.'.length) }, { signal });
+          value = await hooksRpc(method.slice('hooks.'.length), args, signal);
           break;
         case 'skills.list': {
           const result = await skillsTool.execute({ action: 'list' }, exec);
@@ -564,6 +570,12 @@ export function apply(ctx, config = {}) {
     }
   };
   const rpcMethods = ['mcp.retry', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
+  /** Enabling a Hook or saving a stdio MCP server runs a command on this machine, so the caller must be the confirming owner session. */
+  const privilegedWriteMethods = new Set(['hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry', 'mcp.add', 'mcp.retry', 'mcp.upsert', 'mcp.remove', 'mcp.managed', 'contexts.list', 'skills.register', 'skills.unregister']);
+  const admitPrivilegedWrite = (peer) => {
+    if (!isRecord(peer?.principal) || peer.principal.kind !== 'owner') throw new ManagerError('此操作会写入可执行配置；调用方必须是本机所有者会话。');
+    if (peer.interactions !== 'answer') throw new ManagerError('此操作会写入可执行配置；需要能够确认操作的本机会话。');
+  };
   ctx.inject(['connection'], (webCtx) => {
     webCtx.effect(function* () {
     for (const method of rpcMethods) {
@@ -582,6 +594,21 @@ export function apply(ctx, config = {}) {
           if (!isRecord(message) || message.type !== 'client-request'
             || typeof message.rpcId !== 'string' || message.method !== endpoint) {
             return new Response('Invalid RPC request', { status: 400 });
+          }
+          // Any session-scoped RPC reads another Agent's catalog, so it needs the same caller check as a write.
+          const sessionScoped = isRecord(message.payload) && typeof message.payload.sessionId === 'string' && message.payload.sessionId.trim() !== '';
+          if (privilegedWriteMethods.has(method) || sessionScoped) {
+            let denied;
+            // The trust check lives on the shared carrier; a rejection here means no owner Peer was admitted.
+            try {
+              const admission = webCtx.connection.admit ? webCtx.connection.admit(request) : undefined;
+              admitPrivilegedWrite(admission && 'peer' in admission ? admission.peer : undefined);
+            } catch (error) {
+              denied = error instanceof ManagerError ? error : new ManagerError('此请求需要本机所有者会话；调用方校验失败。');
+            }
+            if (denied) {
+              return Response.json({ type: 'server-response', rpcId: message.rpcId, result: { ok: false, error: { code: 'MCP_SKILL_MANAGER_FORBIDDEN', message: denied.message, details: {} } } });
+            }
           }
           const result = await handleRpc(method, message.payload, request.signal);
           return Response.json({ type: 'server-response', rpcId: message.rpcId, result });

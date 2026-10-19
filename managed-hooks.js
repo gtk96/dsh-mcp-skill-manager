@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, lstat, open, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 export const hookEvents = Object.freeze(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop']);
@@ -32,18 +32,23 @@ export function normalizeHook(name, value) {
     try { new RegExp(value.matcher); } catch { throw new ManagedHooksError('Hook matcher 格式无效。'); }
   }
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') throw new ManagedHooksError('Hook enabled 须为布尔值。');
-  return { event: value.event, ...(value.matcher?.trim() ? { matcher: value.matcher } : {}), command: value.command, timeoutSec: value.timeoutSec, enabled: value.enabled ?? false };
+  return { event: value.event, ...(value.matcher?.trim() ? { matcher: value.matcher.trim() } : {}), command: value.command, timeoutSec: value.timeoutSec, enabled: value.enabled ?? false };
+}
+
+/** The single derived slot this manager instance owns, known before any write starts. */
+export function hookArtifactPath(ownerId, instanceNonce) {
+  const scope = `${process.env.DSH_PROFILE_DIR ?? process.env.DSH_HOME ?? process.cwd()}\0${ownerId}\0${instanceNonce}`;
+  return join(tmpdir(), 'dsh-managed-hooks-' + createHash('sha256').update(scope).digest('hex').slice(0, 32), 'hooks.json');
 }
 
 /** Derived cache only: the Profile's managedHooks remains the source of truth. */
-export async function writeHookArtifact(text, ownerId) {
-  const scope = `${process.env.DSH_PROFILE_DIR ?? process.env.DSH_HOME ?? process.cwd()}\0${ownerId}`;
-  const folder = join(tmpdir(), 'dsh-managed-hooks-' + createHash('sha256').update(scope).digest('hex').slice(0, 32));
+export async function writeHookArtifact(text, ownerId, instanceNonce) {
+  const file = hookArtifactPath(ownerId, instanceNonce);
+  const folder = dirname(file);
   await mkdir(folder, { mode: 0o700, recursive: true });
   const directory = await lstat(folder);
   if (directory.isSymbolicLink() || !directory.isDirectory()) throw new ManagedHooksError(failure.failed);
   await chmod(folder, 0o700);
-  const file = join(folder, 'hooks.json');
   let handle;
   try {
     try { handle = await open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }
@@ -66,6 +71,34 @@ export async function writeHookArtifact(text, ownerId) {
   } finally { await handle?.close(); }
 }
 
+/** Replace the artifact's contents with nothing, without deleting the file itself. */
+export async function truncateArtifact(file) {
+  const handle = await open(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1) throw new ManagedHooksError(failure.failed);
+    await handle.truncate(0);
+    await handle.sync();
+  } finally { await handle.close(); }
+}
+
+/** Read back a bounded, regular artifact through the same handle it was verified with. */
+export async function readArtifact(file, maxBytes = 1 << 20) {
+  const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.size > maxBytes) throw new ManagedHooksError(failure.failed);
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < info.size) {
+      const { bytesRead } = await handle.read(buffer, offset, info.size - offset, offset);
+      if (bytesRead === 0) throw new ManagedHooksError(failure.failed);
+      offset += bytesRead;
+    }
+    return buffer.toString('utf8');
+  } finally { await handle.close(); }
+}
+
 /** One official bridge instance owns all enabled rules in their saved order. */
 export function createManagedHooks(ctx, config, compatibility, options = {}) {
   const readBridge = options.readBridge ?? (() => import('@deepseek-ai/dsh-hooks-claude-code'));
@@ -74,11 +107,17 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
   const startupTimeoutMs = options.startupTimeoutMs ?? 30_000;
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
   const key = randomBytes(32);
+  /** One artifact slot per manager instance, so repeated reloads overwrite one file instead of piling up. */
+  const instanceNonce = randomBytes(16).toString('hex');
+  /** Only the built-in writer needs a pre-declared slot; an injected writer returns its own path. */
+  const hookArtifactSlot = options.hookArtifactSlot ?? (options.writeArtifact ? undefined : hookArtifactPath);
   let alive = true;
   let phase = 'disabled';
   let runtimeError;
   let mounted;
   let mountedRules;
+  let artifactPath;
+  let abandonedWrite;
   let dirty = false;
   let force = false;
   let pending;
@@ -129,18 +168,37 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
     return modules;
   }
   async function release() {
-    if (!mounted) return;
-    const current = mounted;
-    if (!current.disposal) {
-      const work = (async () => {
-        await current.fiber.dispose();
-        if (current.fiber.state !== 4) await current.fiber.await();
-      })();
-      current.disposal = work;
-      void work.catch(() => { if (current.disposal === work) current.disposal = undefined; });
+    // Emptying the artifact is unconditional: a run that failed before mounting also wrote a command file.
+    try {
+      if (!mounted) return;
+      const current = mounted;
+      if (!current.disposal) {
+        const work = (async () => {
+          await current.fiber.dispose();
+          if (current.fiber.state !== 4) await current.fiber.await();
+        })();
+        current.disposal = work;
+        void work.catch(() => { if (current.disposal === work) current.disposal = undefined; });
+      }
+      await bounded(current.disposal, cleanupTimeoutMs, failure.cleanup);
+      if (mounted === current) { mounted = undefined; mountedRules = undefined; }
+    } finally {
+      // Wait out any write that outlived its timeout, then empty the slot so no command text remains.
+      await abandonedWrite?.catch(() => {});
+      abandonedWrite = undefined;
+      await clearArtifact();
     }
-    await bounded(current.disposal, cleanupTimeoutMs, failure.cleanup);
-    if (mounted === current) { mounted = undefined; mountedRules = undefined; }
+  }
+  async function clearArtifact() {
+    if (!artifactPath) return;
+    const file = artifactPath;
+    try {
+      await truncateArtifact(file);
+      if (artifactPath === file) artifactPath = undefined;
+    } catch {
+      // Keep the path so a later release can retry; the operator sees the leftover through runtimeError.
+      runtimeError = runtimeError ?? failure.cleanup;
+    }
   }
   async function reconcile() {
     if (!alive) return;
@@ -164,16 +222,41 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
       for (const [, rule] of rules) {
         (groups[rule.event] ??= []).push({ ...(rule.matcher ? { matcher: rule.matcher } : {}), hooks: [{ type: 'command', command: rule.command, timeout: rule.timeoutSec }] });
       }
-      const configPath = await bounded(writeArtifact(JSON.stringify({ hooks: groups }), owner().id), startupTimeoutMs, failure.failed);
+      const serialized = JSON.stringify({ hooks: groups });
+      // Record the slot before writing: a timed-out write can still land later, and this path is what lets
+      // release() empty it instead of leaving a command file nobody tracks.
+      const declaredSlot = typeof hookArtifactSlot === 'function' ? hookArtifactSlot(owner().id, instanceNonce) : undefined;
+      if (declaredSlot) artifactPath = declaredSlot;
+      const write = writeArtifact(serialized, owner().id, instanceNonce);
+      // Keep the attempt until it settles; a timeout must not drop the only handle to a late landing write.
+      let done = false;
+      const settled = write.then(() => { done = true; }, () => { done = true; });
+      abandonedWrite = settled;
+      let configPath;
+      try {
+        configPath = await bounded(write, startupTimeoutMs, failure.failed);
+      } finally {
+        // Only wait for the write later when it outlived this attempt.
+        if (done) abandonedWrite = undefined;
+      }
+      artifactPath = configPath;
       if (!alive) return;
+      // The official bridge fails open: an unreadable or unparsable file leaves zero listeners yet the
+      // fiber still completes. Confirm the file the bridge will read is exactly what this instance wrote.
+      if (!isDeepStrictEqual(JSON.parse(await bounded(readArtifact(configPath), startupTimeoutMs, failure.failed)), JSON.parse(serialized))) throw new ManagedHooksError(failure.failed);
       if (!isDeepStrictEqual(rules, normalized(definitions()).filter(([, rule]) => rule.enabled))) { dirty = true; return; }
+      if (!alive) return;
       let bridgeFiber;
       const fiber = ctx.plugin({ name: 'managed-hooks-runtime', apply(child) {
         bridgeFiber = child.plugin(modules.bridge, { configPath, defaultTimeoutMs: 600_000 });
       } });
       mounted = { fiber };
       mountedRules = rules;
-      await bounded((async () => { await fiber.await(); await bridgeFiber.await(); })(), startupTimeoutMs, failure.failed);
+      await bounded((async () => {
+        await fiber.await();
+        // The child plugin is created inside the parent's apply, so it only exists after the parent settles.
+        await bridgeFiber?.await();
+      })(), startupTimeoutMs, failure.failed);
       if (!alive) return;
       if (!isDeepStrictEqual(rules, normalized(definitions()).filter(([, rule]) => rule.enabled))) { dirty = true; return; }
       phase = 'active';
@@ -194,10 +277,19 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
   }
   async function list(signal) {
     signal?.throwIfAborted();
-    const rows = normalized(definitions());
+    const snapshot = definitions();
+    const rows = normalized(snapshot);
+    const rules = rows.map(([name, rule]) => ({ name, event: rule.event, ...(rule.matcher ? { matcher: rule.matcher } : {}), timeoutSec: rule.timeoutSec, enabled: rule.enabled, commandConfigured: true, revision: revision(name, snapshot[name]) }));
     let writable = false;
-    try { owner(); writable = (await compatibility.report()).writes.hooks === true; } catch { /* Read-only catalog remains available. */ }
-    return { rules: rows.map(([name, rule]) => ({ name, event: rule.event, ...(rule.matcher ? { matcher: rule.matcher } : {}), timeoutSec: rule.timeoutSec, enabled: rule.enabled, commandConfigured: true, revision: revision(name, definitions()[name]) })), events: [...hookEvents], writable, runtime: runtime() };
+    try {
+      const row = owner();
+      // An inherited definition makes every write fail later, so the catalogue must not advertise them as editable.
+      const inherited = ctx.configEditor.configuration().find((entry) => entry.entry === row)?.inherited?.managedHooks;
+      writable = !(record(inherited) && Object.keys(inherited).length) && (await compatibility.report()).writes.hooks === true;
+    } catch { /* Read-only catalog remains available. */ }
+    signal?.throwIfAborted();
+    if (!isDeepStrictEqual(definitions(), snapshot)) throw new ManagedHooksError('Hook 配置在读取期间发生变化，请刷新列表后重试。');
+    return { rules, events: [...hookEvents], writable, runtime: runtime() };
   }
   function assertCurrent(name, raw, expectedRevision) {
     if (!Object.hasOwn(raw, name) || typeof expectedRevision !== 'string' || revision(name, raw[name]) !== expectedRevision) throw new ManagedHooksError('Hook 已变化或修订信息缺失，请刷新列表后重试。');

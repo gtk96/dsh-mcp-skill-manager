@@ -54,7 +54,8 @@ async function core(options = {}) {
     }, {
       readBridge: options.readBridge ?? (async () => defaultBridge),
       readProtocol: async () => protocol,
-      writeArtifact: options.writeArtifact ?? (async (text) => { trace.artifacts.push(JSON.parse(text)); return resolve(root, 'non-executing-hook-fixture.json'); }),
+      writeArtifact: options.writeArtifact ?? (async (text) => { trace.artifacts.push(JSON.parse(text)); const file = resolve(root, 'non-executing-hook-fixture.json'); writeFileSync(file, text, 'utf8'); return file; }),
+      hookArtifactSlot: () => resolve(root, 'non-executing-hook-fixture.json'),
       startupTimeoutMs: options.startupTimeoutMs ?? 100,
       cleanupTimeoutMs: options.cleanupTimeoutMs ?? 50,
     });
@@ -169,12 +170,47 @@ await check('Hook definitions removed during cache generation never mount a stal
   let entered; let release;
   const enteredPromise = new Promise((resolve) => { entered = resolve; });
   const gate = new Promise((resolve) => { release = resolve; });
-  const host = await core({ deferSync: true, rules: { probe: definition({ enabled: true }) }, writeArtifact: async () => { entered(); await gate; return '/fixture-unused'; } });
+  const slot = resolve(root, 'stale-generation-hook-fixture.json');
+  const host = await core({ deferSync: true, rules: { probe: definition({ enabled: true }) }, writeArtifact: async (text) => { entered(); await gate; writeFileSync(slot, text, 'utf8'); return slot; } });
   await enteredPromise;
   host.setRules({}); release();
   await host.manager.sync();
   assert.equal(host.trace.starts, 0);
   assert.equal((await host.manager.list()).runtime.phase, 'disabled');
+  await host.close();
+});
+
+await check('A read-back mismatch rejects the mount instead of reporting a loaded bridge', async () => {
+  const slot = resolve(root, 'tampered-hook-fixture.json');
+  const host = await core({
+    rules: { probe: definition({ enabled: true }) },
+    writeArtifact: async (text) => { writeFileSync(slot, JSON.stringify({ hooks: {} }), 'utf8'); return slot; },
+  });
+  assert.equal((await host.manager.list()).runtime.phase, 'failed');
+  assert.equal(host.trace.starts, 0);
+  await host.close();
+});
+
+await check('Repeated reloads reuse one artifact slot and emptying it leaves no command on disk', async () => {
+  const slots = new Set();
+  const host = await core({
+    rules: { probe: definition({ enabled: true }) },
+    writeArtifact: async (text, ownerId, nonce) => {
+      const file = resolve(root, `slot-${ownerId}-${nonce}.json`);
+      slots.add(file);
+      writeFileSync(file, text, 'utf8');
+      return file;
+    },
+  });
+  assert.equal((await host.manager.list()).runtime.phase, 'active');
+  await host.manager.retry({}, signal());
+  await host.manager.retry({}, signal());
+  assert.equal(slots.size, 1, 'A manager instance must reuse a single derived file');
+  const [slot] = [...slots];
+  assert.ok(readFileSync(slot, 'utf8').includes('fixture-hook-command'));
+  const row = (await host.manager.list()).rules[0];
+  await host.manager.setEnabled({ name: row.name, enabled: false, expectedRevision: row.revision }, signal());
+  assert.equal(readFileSync(slot, 'utf8'), '', 'A disabled rule must not leave its command behind');
   await host.close();
 });
 
@@ -206,7 +242,7 @@ await check('Official Hook bridge loads generated config and dispatches only ena
 });
 
 if (runtimeFixture.version === '0.2.1-rc.2') {
-  await check('Hook RPC and Agent tool share revision-guarded Profile operations without exposing commands', async (t) => {
+  await check('Hook RPC keeps revision-guarded Profile operations without exposing commands', async (t) => {
     const host = await fixture({ hooks: true }); t.after(() => host.close());
     const first = await host.rpc('hooks.upsert', { name: 'probe', definition: definition() });
     assert.equal(first.ok, true, JSON.stringify(first));
@@ -220,8 +256,8 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
     assert.equal(host.hookTrace.shellCalls, 0);
     const stale = await host.rpc('hooks.remove', { name: 'probe', expectedRevision: listed.rules[0].revision });
     assert.equal(stale.ok, false);
-    const removed = await host.call('dsh_manage_hooks', { action: 'remove', name: 'probe', expectedRevision: await revision(host, 'probe') });
-    assert.equal(removed.saved, true);
+    const removed = await host.rpc('hooks.remove', { name: 'probe', expectedRevision: await revision(host, 'probe') });
+    assert.equal(removed.ok, true, JSON.stringify(removed));
     assert.equal((await host.rpc('hooks.list')).value.rules.length, 0);
     assert.equal(host.hookTrace.stops, 1);
     for (const action of ['upsert', 'set-enabled', 'remove', 'retry']) {
@@ -229,6 +265,152 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
       assert.equal(result.ok, false);
     }
   });
+
+  await check('Hook writes from a caller that is not the confirming owner Peer are refused', async (t) => {
+    for (const options of [{ admitDenied: true }, { peerInteractions: 'none' }]) {
+      const host = await fixture({ hooks: true, ...options }); t.after(() => host.close());
+      const listed = await host.rpc('hooks.list');
+      assert.equal(listed.ok, true, JSON.stringify(listed));
+      for (const [method, payload] of [
+        ['hooks.upsert', { name: 'probe', definition: definition() }],
+        ['hooks.set-enabled', { name: 'probe', enabled: true, expectedRevision: 'x' }],
+        ['hooks.remove', { name: 'probe', expectedRevision: 'x' }],
+        ['hooks.retry', {}],
+      ]) {
+        const result = await host.rpc(method, payload);
+        assert.equal(result.ok, false, method);
+        assert.equal(result.error.code, 'MCP_SKILL_MANAGER_FORBIDDEN', method);
+      }
+      assert.equal(host.trace.edits, 0);
+      assert.equal(host.hookTrace.starts.length, 0);
+    }
+  });
+
+  await check('The Agent Hook tool stays read-only so enabling a command needs a person in the settings page', async (t) => {
+    const host = await fixture({ hooks: true }); t.after(() => host.close());
+    const listed = await host.call('dsh_manage_hooks', { action: 'list' });
+    assert.ok(Array.isArray(listed.rules));
+    for (const action of ['upsert', 'set-enabled', 'remove', 'retry']) {
+      await assert.rejects(host.call('dsh_manage_hooks', { action, name: 'probe', definition: definition(), enabled: true }), /list|read-only|settings page/);
+    }
+    assert.equal((await host.rpc('hooks.list')).value.rules.length, 0);
+    assert.equal(host.trace.edits, 0);
+    assert.equal(host.hookTrace.starts.length, 0);
+  });
+if (runtimeFixture.version === '0.2.1-rc.2') {
+  await check('The Hooks tab renders the Profile catalogue and saves a new rule as disabled', async (t) => {
+    const host = await fixture({ hooks: true }); t.after(() => host.close());
+    const ui = await page(t, host);
+    await ui.click('Hooks');
+    assert.ok(ui.content().includes('没有托管 Hook 规则') === false || ui.content().includes('Hook 规则'));
+    assert.equal(ui.alerts().length, 0, 'The Hooks tab must not report a context or format error');
+    await ui.click('新建 Hook 规则');
+    await ui.fill({ 'Hook 规则名称': 'probe-hook', 'Hook 命令': 'fixture-hook-command', 'Hook 超时秒数': '12' });
+    await ui.submit('新建 Hook');
+    const listed = (await host.rpc('hooks.list')).value;
+    assert.equal(listed.rules.length, 1);
+    assert.equal(listed.rules[0].name, 'probe-hook');
+    assert.equal(listed.rules[0].enabled, false, 'A new rule must be disabled');
+    assert.equal(listed.rules[0].timeoutSec, 12);
+    assert.equal(ui.alerts().length, 0, JSON.stringify(ui.alerts()));
+    assert.ok(ui.content().includes('probe-hook'));
+    assert.equal(JSON.stringify(ui.requests).includes('fixture-hook-command') && listed.rules[0].commandConfigured, true);
+    assert.equal(host.hookTrace.starts.length, 0, 'A disabled rule must not start the bridge');
+  });
+
+  await check('Enabling a Hook in the page needs a second confirmation and reports the loaded bridge', async (t) => {
+    const host = await fixture({ hooks: true, managedHooks: { probe: definition() } }); t.after(() => host.close());
+    const ui = await page(t, host);
+    await ui.click('Hooks');
+    await ui.click('启用');
+    assert.equal(host.hookTrace.starts.length, 0, 'The first press only arms the confirmation');
+    await ui.click('确认启用');
+    assert.equal((await host.rpc('hooks.list')).value.rules[0].enabled, true);
+    let state = (await host.rpc('hooks.list')).value.runtime;
+    for (let i = 0; i < 40 && state.phase === 'loading'; i++) {
+      await act(async () => { await tick(); });
+      state = (await host.rpc('hooks.list')).value.runtime;
+    }
+    assert.equal(host.hookTrace.starts.length, 1, `Enabling must mount the official bridge, runtime=${JSON.stringify(state)}`);
+    assert.ok(ui.content().includes('桥接器已加载'));
+    assert.match(ui.content(), /不代表规则已执行/);
+  });
+
+  await check('A stale revision typed in the page is refused and the page shows the Host reason', async (t) => {
+    const host = await fixture({ hooks: true, managedHooks: { probe: definition() } }); t.after(() => host.close());
+    const ui = await page(t, host, (method, args) => method === 'hooks.list'
+      ? host.rpc(method, args).then((result) => ({ ...result, value: { ...result.value, rules: result.value.rules.map((rule) => ({ ...rule, revision: 'stale-revision' })) } }))
+      : undefined);
+    await ui.click('Hooks');
+    await ui.click('启用');
+    await ui.click('确认启用');
+    assert.equal(ui.alerts().length, 1);
+    assert.match(ui.alerts()[0], /变化|修订/);
+    assert.equal((await host.rpc('hooks.list')).value.rules[0].enabled, false);
+    assert.equal(host.trace.edits, 0);
+  });
+
+  await check('A malformed Hook catalogue disables every Hook write instead of enabling an empty list', async (t) => {
+    const host = await fixture({ hooks: true, managedHooks: { probe: definition() } }); t.after(() => host.close());
+    const ui = await page(t, host, (method, args) => method === 'hooks.list'
+      ? host.rpc(method, args).then((result) => ({ ...result, value: { ...result.value, rules: [{ name: 'bad' }] } }))
+      : undefined);
+    await ui.click('Hooks');
+    assert.equal(ui.alerts().length, 1);
+    assert.match(ui.alerts()[0], /格式无效/);
+    assert.equal(ui.button('新建 Hook 规则').props.disabled, true);
+    assert.equal(ui.mutations().length, 0);
+  });
+
+  await check('A saved Hook stays reported as persisted when the following catalogue reload fails', async (t) => {
+    const host = await fixture({ hooks: true }); t.after(() => host.close());
+    let listed = 0;
+    const ui = await page(t, host, (method, args) => method === 'hooks.list' && ++listed > 1
+      ? Promise.resolve({ ok: false, error: { message: 'fixture reload failure' } })
+      : undefined);
+    await ui.click('Hooks');
+    await ui.click('新建 Hook 规则');
+    await ui.fill({ 'Hook 规则名称': 'probe-hook', 'Hook 命令': 'fixture-hook-command', 'Hook 超时秒数': '12' });
+    await ui.submit('新建 Hook');
+    assert.equal((await host.rpc('hooks.list')).value.rules.length, 1, 'The write itself must still persist');
+    assert.match(ui.content(), /已持久化/);
+    assert.match(ui.content(), /刷新 Hooks/);
+  });
+
+  await check('Every privileged write RPC refuses a caller that is not the confirming owner', async (t) => {
+    for (const options of [{ admitDenied: true }, { peerInteractions: 'none' }]) {
+      const host = await fixture({ hooks: true, managed: true, ...options }); t.after(() => host.close());
+      for (const [method, payload] of [
+        ['mcp.add', { sessionId: '', serverName: 'probe', definition: { transport: 'stdio', command: 'fixture-command', args: [] } }],
+        ['mcp.retry', { sessionId: '', serverName: 'probe' }],
+        ['mcp.upsert', { entryId: 'include:fixture', configPath: 'maps.A', name: 'probe', definition: { command: 'fixture' } }],
+        ['mcp.remove', { entryId: 'include:fixture', configPath: 'maps.A', name: 'demo', expectedRevision: 'x' }],
+        ['skills.register', { sessionId: '', name: 'probe-skill', description: 'Fixture', content: 'Fixture body' }],
+        ['skills.unregister', { sessionId: '', name: 'probe-skill' }],
+        ['hooks.upsert', { name: 'probe', definition: definition() }],
+        ['hooks.set-enabled', { name: 'probe', enabled: true, expectedRevision: 'x' }],
+        ['hooks.remove', { name: 'probe', expectedRevision: 'x' }],
+        ['hooks.retry', {}],
+      ]) {
+        const result = await host.rpc(method, payload);
+        assert.equal(result.ok, false, method);
+        assert.equal(result.error.code, 'MCP_SKILL_MANAGER_FORBIDDEN', method);
+      }
+      assert.equal(host.trace.edits, 0);
+      assert.equal(host.trace.registrations, 0);
+      assert.equal(host.hookTrace.starts.length, 0);
+      assert.equal(host.bridgeTrace.starts.length, 0);
+    }
+  });
+
+  await check('A session-scoped read from a caller that is not the owner is refused', async (t) => {
+    const host = await fixture({ hooks: true, admitDenied: true }); t.after(() => host.close());
+    assert.equal((await host.rpc('skills.list', { sessionId: 'session-other' })).error.code, 'MCP_SKILL_MANAGER_FORBIDDEN');
+    assert.equal((await host.rpc('mcp.discover', { sessionId: 'session-other' })).error.code, 'MCP_SKILL_MANAGER_FORBIDDEN');
+    assert.equal((await host.rpc('contexts.list', { sessionId: 'session-other' })).error.code, 'MCP_SKILL_MANAGER_FORBIDDEN');
+    assert.equal((await host.rpc('skills.list', { sessionId: '' })).ok, true, 'The Profile read stays available');
+  });
+}
 } else {
   await check('Hook writes stay read-only outside the exact supported DSH Hook baseline', async (t) => {
     const host = await fixture({ hooks: true }); t.after(() => host.close());
@@ -237,5 +419,8 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
     assert.equal(host.trace.edits, 0);
   });
 }
+
+// Known gap: a derived Hook file written after its timeout can still land after release() and keep its
+// command text. The tracker and the abandoned-write wait are in managed-hooks.js; the cleanup is unproven.
 
 writeReport();

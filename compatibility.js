@@ -53,7 +53,7 @@ export function createCompatibility(ctx, serviceFor, runtimeReader = readRuntime
       testedRuntimeVersions: [...testedRuntimeVersions],
       installRange: manifest.peerDependencies['@deepseek-ai/dsh'],
       capabilities,
-      writes: { mcp: tested && capabilities.configEdit, skills: tested && capabilities.runtimeSkills, hooks: runtimeVersion === '0.2.1-rc.2' && capabilities.configEdit },
+      writes: { mcp: tested && capabilities.configEdit, skills: tested && capabilities.runtimeSkills, hooks: runtimeVersion === '0.2.1-rc.2' && capabilities.configEdit && capabilities.hookRuntime },
       checks: 'method-presence-only',
     };
   }

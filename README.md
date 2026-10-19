@@ -96,7 +96,9 @@ Runtime Skill 随插件退出注销。持久化 Skill 文件的安装、修改�
 
 Client 使用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)`；Host 用精确 POST 路由复用 DSH `/api` 认证。只公开本插件标记的输入错误，外部 Service/provider 异常返回通用错误。
 
-方法包括 `mcp.retry`、`mcp.managed`、`mcp.add`、`compatibility.status`、`contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。兼容状态协议为 `protocolVersion: 1`，包括 `runtimeVersion`、`versionStatus`、`testedRuntimeVersions`、`capabilities`、`writes`；无法识别版本时 `runtimeVersion` 为 null。被兼容闸门拒绝的 RPC 返回 `MCP_SKILL_MANAGER_INCOMPATIBLE`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
+方法包括 `mcp.retry`、`mcp.managed`、`mcp.add`、`compatibility.status`、`contexts.list`、`mcp.discover`、`mcp.catalog`、`mcp.upsert`、`mcp.remove`、`hooks.list`、`hooks.upsert`、`hooks.set-enabled`、`hooks.remove`、`hooks.retry`、`skills.list`、`skills.get`、`skills.register`、`skills.unregister`。兼容状态协议为 `protocolVersion: 1`，包括 `runtimeVersion`、`versionStatus`、`testedRuntimeVersions`、`capabilities`、`writes`；无法识别版本时 `runtimeVersion` 为 null。被兼容闸门拒绝的 RPC 返回 `MCP_SKILL_MANAGER_INCOMPATIBLE`。会话读取使用 `sessionId`，空字符串表示全局。插件生命周期清理路由、工具、Runtime Skill、样式和 Slot。
+
+Hook 写入只经 `hooks.*` RPC 提供给 Settings 页面；面向 Agent 的 `dsh_manage_hooks` 只有 `list`，因为启用一条规则意味着在本机执行命令。`/api` 认证是这条 RPC 的调用方边界。
 
 `mcp.managed` 返回 `{ writable, servers }`，目录仅含名称、传输类型、本地声明阶段、限定诊断和未知连接状态。`mcp.retry` 接受 `{ sessionId: "", serverName }`，只重试本插件本地失败项，返回 `{ retried: true, serverName, connectionState: "unknown" }`；不保存定义，也不重连健康项。`mcp.add` 接受 `{ sessionId: "", serverName, definition }`，定义字段为 `transport`、stdio 的 `command/args/cwd/envFromEnv` 或 HTTP 的 `url/headersFromEnv`；返回 `{ saved: true, serverName, connectionState: "unknown" }`。它只创建新配置，不覆盖；保存后的连接失败不会把持久配置自动撤销。
 

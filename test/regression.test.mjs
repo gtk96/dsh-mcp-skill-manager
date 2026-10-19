@@ -149,6 +149,10 @@ async function fixture(options = {}) {
         return () => { routes.delete(route.path); };
       },
     },
+    // Mirrors the carrier's owner-Peer admission; `options.peer` lets a test act as a non-owner caller.
+    admit: () => options.admitDenied
+      ? { rejection: 403 }
+      : { peer: { id: 'fixture-peer', principal: { kind: 'owner' }, interactions: options.peerInteractions ?? 'answer' } },
   };
   ctx.reflect.provide('configEditor', configEditor);
   ctx.reflect.provide('skills', skills);
@@ -191,7 +195,7 @@ async function fixture(options = {}) {
     start(content) { hookTrace.starts.push(clone(content)); },
     stop() { hookTrace.stops++; },
   });
-  if (options.hooks) {
+  if (options.hooks || options.hookRuntime) {
     ctx.reflect.provide('shell', { resolve() {}, async execute() { hookTrace.shellCalls++; throw new Error('Fixture must not execute Hook commands'); } });
     ctx.reflect.provide('sessionProjections', { stateOf() { return {}; } });
     ctx.reflect.provide('workingDirectory', { get() { return '/fixture'; }, async ensure() { return '/fixture'; } });
@@ -287,11 +291,23 @@ async function page(t, host, intercept, sessionRows = {}) {
     renderer, requests,
     async setSessionRows(next) { projectedSessions = next; await act(async () => { renderer.update(makePage()); await tick(); }); },
     button(label) { return renderer.root.findAllByType('button').find((node) => text(node) === label); },
+    field(label) { return renderer.root.findByProps({ 'aria-label': label }); },
+    async fill(values) {
+      await act(async () => { for (const [label, value] of Object.entries(values)) this.field(label).props.onChange({ currentTarget: { value } }); });
+    },
+    async submit(label) {
+      await act(async () => {
+        const form = renderer.root.findAll((node) => node.type === 'form' && node.props['aria-label'] === label)[0];
+        assert.ok(form, 'Expected form: ' + label);
+        await form.props.onSubmit({ preventDefault() {} });
+        await tick();
+      });
+    },
     async click(label) {
       const button = this.button(label);
       assert.ok(button, 'Expected button: ' + label);
       assert.equal(!!button.props.disabled, false, 'Button must be enabled: ' + label);
-      await act(async () => { await button.props.onClick(); await tick(); });
+      await act(async () => { await button.props.onClick(); await tick(); await tick(); });
     },
     alerts() { return renderer.root.findAllByProps({ role: 'alert' }).map(text); },
     content() { return text(renderer.root); },
@@ -358,11 +374,27 @@ await check('Catalog uses effective Loader config, true row identity and blank-p
   assert.equal(value.entries[0].servers.actual.values.command, '[configured]');
 });
 
+await check('The generic MCP map writer refuses plaintext credentials and malformed definitions', async (t) => {
+  const host = await fixture(); t.after(() => host.close());
+  for (const definition of [
+    { transport: 'stdio', command: 'fixture', env: { TOKEN: 'NOT-A-REAL-VALUE-must-be-rejected' } },
+    { transport: 'stdio', command: 'fixture', envFromEnv: { TOKEN: 'NOT-A-REAL-VALUE-must-be-rejected' } },
+    { transport: 'stdio' },
+  ]) {
+    const result = await host.rpc('mcp.upsert', { entryId: 'include:fixture', name: 'probe', definition });
+    assert.equal(result.ok, false, JSON.stringify(definition));
+    assert.match(result.error.message, /环境变量|字段|无效|定义/);
+  }
+  assert.equal(host.trace.edits, 0, 'A rejected definition must not reach the config editor');
+});
+
 await check('Ambiguous config names reject edits without touching fixture data', async (t) => {
   const host = await fixture();
   t.after(() => host.close());
   host.rows.push({ entry: { id: 'include:other', options: { id: 'other', name: 'fixture-plugin', config: {} } }, inherited: {}, override: {} });
-  await assert.rejects(host.call('dsh_manage_mcp_servers', { action: 'upsert', entryId: 'fixture-plugin', name: 'demo', definition: {} }), /Multiple config entries/);
+  const ambiguous = await host.rpc('mcp.upsert', { entryId: 'fixture-plugin', name: 'demo', definition: {} });
+  assert.equal(ambiguous.ok, false);
+  assert.match(ambiguous.error.message, /Multiple config entries/);
   assert.equal(host.trace.edits, 0);
 });
 
@@ -372,7 +404,7 @@ await check('Override removal restores inherited definition and preserves other 
   t.after(() => host.close());
   const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
   const revision = catalog.entries[0].servers.demo.revision;
-  const value = await host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo', expectedRevision: revision });
+  const value = (await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo', expectedRevision: revision })).value;
   assert.equal(value.inheritedRemains, true);
   assert.deepEqual(host.entry.options.config.maps.A.demo, inherited.maps.A.demo);
   assert.equal(host.entry.options.config.maps.B.demo.command, 'fixture-b');
@@ -384,9 +416,9 @@ await check('Removing an overridden Server rejects missing and stale revisions',
   t.after(() => host.close());
   const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
   const oldRevision = catalog.entries[0].servers.demo.revision;
-  await assert.rejects(host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo' }), /lacks a revision/);
+  assert.match((await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo' })).error.message, /lacks a revision/);
   host.entry.options.config.maps.A.demo.command = 'new-definition';
-  await assert.rejects(host.call('dsh_manage_mcp_servers', { action: 'remove', entryId: 'fixture', name: 'demo', expectedRevision: oldRevision }), /changed or lacks a revision/);
+  assert.match((await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo', expectedRevision: oldRevision })).error.message, /changed or lacks a revision/);
   assert.equal(host.entry.options.config.maps.A.demo.command, 'new-definition');
 });
 

@@ -18,7 +18,7 @@ DSH 的 Hook 由官方 `@deepseek-ai/dsh-hooks-claude-code` 执行，它只做�
 - **重载顺序**：先释放旧子实例并等待完成，再写派生文件并挂新实例；释放失败或超时进入 `failed`，不创建同名替代实例。加载期间规则再次变化则丢弃本次挂载。
 - **状态分离**：分别报告"已保存"（持久化成功）与运行状态（`disabled`/`loading`/`active`/`failed`/`unavailable`）。`active` 只表示桥接器已加载，不代表规则已执行。
 - **不碰原生条目**：已存在的 `hooks-claude-code` Loader 条目保持原状，不自动启用、不改其配置。
-- **作用域**：只允许 Profile 全局写入；Agent 工具 `dsh_manage_hooks` 与 RPC 复用同一组 Host 方法的参数和语义。
+- **作用域**：只允许 Profile 全局写入。写入只经 `hooks.*` RPC 提供给 Settings 页面；面向 Agent 的 `dsh_manage_hooks` 工具只有 `list`，因为启用规则等同于在本机执行命令，不能让 Agent 自行授权。
 
 ## Alternatives considered
 
@@ -30,11 +30,15 @@ DSH 的 Hook 由官方 `@deepseek-ai/dsh-hooks-claude-code` 执行，它只做�
 
 ## Acceptance criteria
 
-停用规则不导入桥接模块、不生成执行文件、不启动进程。启用前校验官方模块与 `shell`/`sessionProjections`/`workingDirectory` 三项能力，缺一即拒绝持久化。同一名称并发创建只有一个成功；过期 `revision` 的启停与移除被拒绝。写入期间规则变化不会挂载过期定义。派生文件仅覆盖自身固定路径，先确认目录与文件为自身普通文件再写入。插件卸载时释放子实例。官方桥接器只收到已启用规则，未匹配事件不执行任何命令。
+停用规则不导入桥接模块、不生成执行文件、不启动进程。启用前校验官方模块与 `shell`/`sessionProjections`/`workingDirectory` 三项能力，缺一即拒绝持久化。同一名称并发创建只有一个成功；过期 `revision` 的启停与移除被拒绝。写入期间规则变化不会挂载过期定义。派生文件按管理器实例使用一个专属路径，同一实例重复重载覆盖同一文件；写入前确认目录与文件为自身普通文件，挂载前通过同一句柄回读并比对内容，停用或卸载后截断为空文件，不物理删除。插件卸载时释放子实例。官方桥接器只收到已启用规则，未匹配事件不执行任何命令。
 
 ## Consequences
 
 保存成功与执行生效是两件事，页面必须分开表述。Hook 命令由用户自行保证幂等与安全，插件不做沙箱隔离。外部 Claude Code 的 Hook 配置不在管理范围。DSH 版本不在 `0.2.1-rc.2` 基线时 Hook 写入只读，但停用规则的保存不受模块缺失影响。
+
+## Known gaps
+
+派生文件的写入超时不会被取消：写入可能在 `release()` 之后才落盘，把命令文本留在临时目录。槽位路径已在写入前记录，`release()` 也会等待迟到的写入，但这一清理尚未通过回归证明。Windows 上 `O_NOFOLLOW` 为空，截断会跟随符号链接。`skills.register` / `skills.unregister` 仍可经 Agent 工具调用，尚未纳入 `owner + answer` 门。
 
 ## Pitfalls
 

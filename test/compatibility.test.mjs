@@ -23,13 +23,13 @@ const mutations = [
 const localSkill = { name: 'fixture-skill', description: 'Fixture description', content: 'Fixture readable body', source: 'custom', provider: 'fixture-provider' };
 
 await check('Compatibility reports version and methods without invoking business services', async (t) => {
-  const host = await fixture(); t.after(() => host.close());
+  const host = await fixture({ hookRuntime: true }); t.after(() => host.close());
   const result = await host.rpc('compatibility.status');
   assert.equal(result.ok, true);
   assert.equal(result.value.runtimeVersion, baselineRuntimeVersion);
   assert.equal(result.value.pluginVersion, packageFixture.version);
   assert.equal(result.value.versionStatus, 'tested');
-  assert.deepEqual(result.value.writes, { mcp: true, skills: true, hooks: true });
+  assert.deepEqual(result.value.writes, { mcp: true, skills: true, hooks: baselineRuntimeVersion === '0.2.1-rc.2' });
   assert.equal(result.value.capabilities.sessionSelection, false);
   assert.equal(result.value.checks, 'method-presence-only');
   assert.equal(host.trace.edits + host.trace.registrations + host.trace.snapshots.length, 0);
@@ -38,7 +38,7 @@ await check('Compatibility reports version and methods without invoking business
 for (const version of ['0.2.0-rc.2', '0.2.1-rc.2']) {
   await check(`Verified runtime ${version} permits managed MCP and Runtime Skill operations`, async (t) => {
     runtimeVersion(t, version);
-    const host = await fixture({ managed: true }); t.after(() => host.close());
+    const host = await fixture({ managed: true, hookRuntime: true }); t.after(() => host.close());
     const status = (await host.rpc('compatibility.status')).value;
     assert.equal(status.runtimeVersion, version);
     assert.equal(status.versionStatus, 'tested');
@@ -68,7 +68,7 @@ for (const version of ['0.2.1-alpha.4', '0.2.1-rc.3', '1.0.0', undefined, 'not-a
       assert.equal(result.error.code, 'MCP_SKILL_MANAGER_INCOMPATIBLE');
       assert.match(result.error.message, /只读/);
     }
-    await assert.rejects(host.call('dsh_manage_mcp_servers', { ...mutations[0][1], action: 'upsert' }), /只读/);
+    await assert.rejects(host.call('dsh_manage_mcp_servers', { ...mutations[0][1], action: 'upsert' }), /设置页|发现与读取|discover, list/);
     await assert.rejects(host.call('dsh_manage_skills', { ...mutations[2][1], action: 'register' }), /只读/);
     assert.equal(host.trace.edits + host.trace.registrations + host.trace.rollbacks, 0);
     assert.equal((await host.rpc('mcp.catalog')).ok, true);
@@ -91,10 +91,10 @@ await check('Missing config edit method blocks only MCP writes and preserves rea
 });
 
 await check('Missing Runtime register method blocks only Skill writes', async (t) => {
-  const host = await fixture(); t.after(() => host.close());
+  const host = await fixture({ hookRuntime: true }); t.after(() => host.close());
   host.skills.register = undefined;
   const status = (await host.rpc('compatibility.status')).value;
-  assert.deepEqual(status.writes, { mcp: true, skills: false, hooks: true });
+  assert.deepEqual(status.writes, { mcp: true, skills: false, hooks: baselineRuntimeVersion === '0.2.1-rc.2' });
   assert.equal((await host.rpc(...mutations[2])).error.code, 'MCP_SKILL_MANAGER_INCOMPATIBLE');
   assert.equal((await host.rpc(...mutations[0])).ok, true);
   assert.equal(host.trace.registrations, 0);
@@ -206,8 +206,8 @@ await check('Contradictory unverified status with write flags cannot enable Clie
   assert.equal(ui.mutations().length, 0);
 });
 
-for (const boundary of ['Tool', 'RPC']) for (const action of ['upsert', 'remove']) {
-  await check(`${boundary} ${action} cancellation during queued config editing preserves configuration`, async (t) => {
+for (const action of ['upsert', 'remove']) {
+  await check(`RPC ${action} cancellation during queued config editing preserves configuration`, async (t) => {
     const host = await fixture(); t.after(() => host.close());
     const before = structuredClone(host.entry.options.config);
     let entered;
@@ -223,14 +223,11 @@ for (const boundary of ['Tool', 'RPC']) for (const action of ['upsert', 'remove'
     };
     const controller = new AbortController();
     const args = mutations[action === 'upsert' ? 0 : 1][1];
-    const pending = boundary === 'Tool'
-      ? host.call('dsh_manage_mcp_servers', { ...args, action }, { signal: controller.signal })
-      : host.rpc(`mcp.${action}`, args, controller.signal);
+    const pending = host.rpc(`mcp.${action}`, args, controller.signal);
     await arrival;
     controller.abort(new Error('Fixture queued cancellation'));
     release();
-    if (boundary === 'Tool') await assert.rejects(pending);
-    else assert.equal((await pending).ok, false);
+    assert.equal((await pending).ok, false);
     assert.equal(host.trace.edits, 0);
     assert.deepEqual(host.entry.options.config, before);
   });

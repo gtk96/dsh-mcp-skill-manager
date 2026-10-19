@@ -23,7 +23,7 @@ const progress = resolve(root, 'test-progress.log');
 writeFileSync(progress, 'isolated test module loaded\n');
 const mark = (message) => appendFileSync(progress, message + '\n');
 const hashes = {};
-for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
+for (const [fixture, source] of [['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['mcp-config.js', 'mcp-config.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
   const copy = readFileSync(resolve(root, fixture));
   assert.deepEqual(copy, readFileSync(resolve(repo, source)), 'Tested fixture must match the actual plugin source');
   hashes[source] = createHash('sha256').update(copy).digest('hex');
@@ -104,11 +104,10 @@ async function fixture(options = {}) {
         const next = change(clone(target.options.config), {});
         trace.edits++;
         target.options.config = clone(next);
-        updateVolatile(fiber.config.managedServers, plugin.Config(next).managedServers);
         updateVolatile(fiber.config.managedHooks, plugin.Config(next).managedHooks);
         const self = Object.create(fiber.ctx);
         self[Context.filter] = (owner) => owner.fiber === fiber;
-        fiber.ctx.emit(self, 'loader/volatile-update', [['managedServers'], ['managedHooks']]);
+        fiber.ctx.emit(self, 'loader/volatile-update', [['managedHooks']]);
         return;
       }
       if (target === entry) {
@@ -210,9 +209,9 @@ async function fixture(options = {}) {
   }
   let removeConnection;
   if (options.web !== false) removeConnection = ctx.reflect.provide('connection', connection);
-  const fiber = await ctx.plugin(plugin, { mcpConfigPath: 'maps.A', managedServers: options.managedServers ?? {}, managedHooks: options.managedHooks ?? {} });
+  const fiber = await ctx.plugin(plugin, { managedHooks: options.managedHooks ?? {} });
   if (options.managed || options.hooks) {
-    managerEntry = { id: 'include:mcp-skill-manager', fiber, options: { id: 'mcp-skill-manager', name: 'dsh-mcp-skill-manager', config: { mcpConfigPath: 'maps.A', managedServers: clone(options.managedServers ?? {}), managedHooks: clone(options.managedHooks ?? {}) } } };
+    managerEntry = { id: 'include:mcp-skill-manager', fiber, options: { id: 'mcp-skill-manager', name: 'dsh-mcp-skill-manager', config: { managedHooks: clone(options.managedHooks ?? {}) } } };
     rows.push({ entry: managerEntry, inherited: {}, override: {} });
   }
   await tick();
@@ -335,12 +334,12 @@ await check('Optional Web arrival and removal do not stop Host tools or leak rou
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 19);
+  assert.equal(host.routes.size, 13);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 3);
   await host.attachWeb();
-  assert.equal(host.routes.size, 19);
+  assert.equal(host.routes.size, 13);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {
@@ -370,64 +369,6 @@ await check('Plugin unload releases a Runtime Skill while post-registration disc
   releaseObserved({ skills: saved, complete: true });
   assert.equal((await registering).ok, false);
   assert.equal(host.runtime.size, 0);
-});
-
-await check('Catalog uses effective Loader config, true row identity and blank-path fallback', async (t) => {
-  const host = await fixture({ inherited: { maps: { A: { obsolete: {} } } }, override: { maps: { A: { overridden: {} } } }, current: { maps: { A: { actual: { command: 'fixture-command' } } } } });
-  t.after(() => host.close());
-  const value = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: '  ' });
-  assert.equal(value.configPath, 'maps.A');
-  assert.deepEqual(value.entries[0].entry, { id: 'include:fixture', patchId: 'fixture', name: 'fixture-plugin' });
-  assert.deepEqual(Object.keys(value.entries[0].servers), ['actual']);
-  assert.equal(value.entries[0].servers.actual.values.command, '[configured]');
-});
-
-await check('The generic MCP map writer refuses plaintext credentials and malformed definitions', async (t) => {
-  const host = await fixture(); t.after(() => host.close());
-  for (const definition of [
-    { transport: 'stdio', command: 'fixture', env: { TOKEN: 'NOT-A-REAL-VALUE-must-be-rejected' } },
-    { transport: 'stdio', command: 'fixture', envFromEnv: { TOKEN: 'NOT-A-REAL-VALUE-must-be-rejected' } },
-    { transport: 'stdio' },
-  ]) {
-    const result = await host.rpc('mcp.upsert', { entryId: 'include:fixture', name: 'probe', definition });
-    assert.equal(result.ok, false, JSON.stringify(definition));
-    assert.match(result.error.message, /环境变量|字段|无效|定义/);
-  }
-  assert.equal(host.trace.edits, 0, 'A rejected definition must not reach the config editor');
-});
-
-await check('Ambiguous config names reject edits without touching fixture data', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
-  host.rows.push({ entry: { id: 'include:other', options: { id: 'other', name: 'fixture-plugin', config: {} } }, inherited: {}, override: {} });
-  const ambiguous = await host.rpc('mcp.upsert', { entryId: 'fixture-plugin', name: 'demo', definition: {} });
-  assert.equal(ambiguous.ok, false);
-  assert.match(ambiguous.error.message, /Multiple config entries/);
-  assert.equal(host.trace.edits, 0);
-});
-
-await check('Override removal restores inherited definition and preserves other fixture fields', async (t) => {
-  const inherited = { maps: { A: { demo: { command: 'inherited-fixture' } } } };
-  const host = await fixture({ inherited });
-  t.after(() => host.close());
-  const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
-  const revision = catalog.entries[0].servers.demo.revision;
-  const value = (await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo', expectedRevision: revision })).value;
-  assert.equal(value.inheritedRemains, true);
-  assert.deepEqual(host.entry.options.config.maps.A.demo, inherited.maps.A.demo);
-  assert.equal(host.entry.options.config.maps.B.demo.command, 'fixture-b');
-  assert.deepEqual(host.entry.options.config.unrelated, { keep: true });
-});
-
-await check('Removing an overridden Server rejects missing and stale revisions', async (t) => {
-  const host = await fixture();
-  t.after(() => host.close());
-  const catalog = await host.call('dsh_manage_mcp_servers', { action: 'list', configPath: 'maps.A' });
-  const oldRevision = catalog.entries[0].servers.demo.revision;
-  assert.match((await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo' })).error.message, /lacks a revision/);
-  host.entry.options.config.maps.A.demo.command = 'new-definition';
-  assert.match((await host.rpc('mcp.remove', { entryId: 'fixture', name: 'demo', expectedRevision: oldRevision })).error.message, /changed or lacks a revision/);
-  assert.equal(host.entry.options.config.maps.A.demo.command, 'new-definition');
 });
 
 await check('External provider TypeErrors are sanitized at both tool and RPC boundaries', async (t) => {
@@ -545,29 +486,13 @@ await check('Concurrent unregistration cannot dispose one Runtime Skill twice', 
   assert.equal((await host.rpc('skills.unregister', { name: 'concurrent-skill' })).value.changed, false);
 });
 
-await check('A Server replacement rejects changes made after catalog read', async (t) => {
-  const host = await fixture(); t.after(() => host.close());
-  const catalog = await host.rpc('mcp.catalog');
-  const revision = catalog.value.entries.find((row) => row.entry.id === 'include:fixture').servers.demo.revision;
-  const payload = { entryId: 'include:fixture', configPath: 'maps.A', name: 'demo', definition: { command: 'replacement' }, expectedRevision: revision };
-  host.entry.options.config.maps.A.demo.command = 'external-update';
-  const denied = await host.rpc('mcp.upsert', payload);
-  assert.equal(denied.ok, false);
-  assert.match(denied.error.message, /refresh the catalog/);
-  assert.equal(host.entry.options.config.maps.A.demo.command, 'external-update');
-  const fresh = await host.rpc('mcp.catalog');
-  payload.expectedRevision = fresh.value.entries.find((row) => row.entry.id === 'include:fixture').servers.demo.revision;
-  assert.equal((await host.rpc('mcp.upsert', payload)).value.changed, true);
-  assert.equal(host.entry.options.config.maps.A.demo.command, 'replacement');
-});
-
-await check('Settings exposes MCP groups, managed add and Skills without mapping UI or catalog RPC', async (t) => {
-  const host = await fixture({ managed: true, managedServers: {
-    grouped: { transport: 'stdio', command: 'fixture-command', args: [] },
-  }, globalTools: [{ name: 'mcp__grouped__query' }], skillRows: { profile: [
+await check('Settings shows MCP groups, the empty-Server warning and Skills without a mapping editor', async (t) => {
+  const host = await fixture({ globalTools: [{ name: 'mcp__grouped__query' }], skillRows: { profile: [
     { name: 'fixture-visible', description: 'Fixture Skill', content: 'Fixture visible body', source: 'global', provider: 'fixture' },
   ] } });
   t.after(() => host.close());
+  host.rows.push({ entry: { id: 'include:mcp-grouped', options: { id: 'mcp-grouped', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'grouped', transport: 'stdio', command: 'fixture-command', args: [] } } }, inherited: {}, override: {} });
+  host.rows.push({ entry: { id: 'include:mcp-silent', options: { id: 'mcp-silent', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'silent', transport: 'streamable-http', url: 'http://fixture.invalid/mcp', headers: {} } } }, inherited: {}, override: {} });
   const ui = await page(t, host);
   const assertNoMap = () => {
     assert.doesNotMatch(ui.content(), /高级：Profile 配置映射编辑|MCP 映射路径|配置条目|新增自定义映射 Server|替换 override/);
@@ -577,9 +502,10 @@ await check('Settings exposes MCP groups, managed add and Skills without mapping
   };
   assertNoMap();
   assert.ok(ui.content().includes('grouped（1 个候选工具）'));
+  // A configured server without tools is the failure DSH reports silently; the page must name it.
+  assert.match(ui.content(), /没有任何工具/);
+  assert.ok(ui.content().includes('silent'));
   await ui.click('刷新 MCP 发现');
-  await ui.click('添加托管 MCP');
-  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
   assertNoMap();
   await ui.click('Skills');
   assert.ok(ui.content().includes('fixture-visible'));
@@ -587,7 +513,6 @@ await check('Settings exposes MCP groups, managed add and Skills without mapping
   assert.ok(ui.content().includes('Fixture visible body'));
   assert.equal(ui.button('注册 Runtime Skill').props.disabled, false);
   assertNoMap();
-  assert.equal(ui.alerts().length, 0);
   assert.equal(ui.mutations().length, 0);
 });
 

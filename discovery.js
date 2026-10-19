@@ -1,4 +1,6 @@
-const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client';
+import { describeConfig, MCP_CLIENT } from './mcp-config.js';
+
+export { MCP_CLIENT };
 
 export class DiscoveryError extends Error {}
 
@@ -92,16 +94,21 @@ export function createDiscovery(ctx) {
       warnings.push('所选作用域的工具目录读取失败，不能据此判断 MCP 是否存在。');
     }
     try {
-      for (const { entry } of ctx.configEditor.configuration()) {
+      for (const { entry, inherited } of ctx.configEditor.configuration()) {
         if (entry.options?.name !== MCP_CLIENT) continue;
+        const entryConfig = entry.options.config ?? {};
         configured.push({
           kind: 'profile-config',
           entryId: entry.id,
           patchId: entry.options.id,
-          serverName: typeof entry.options.config?.serverName === 'string' ? entry.options.config.serverName : null,
+          serverName: typeof entryConfig.serverName === 'string' ? entryConfig.serverName : null,
           moduleName: MCP_CLIENT,
           fiberState: typeof entry.fiber?.state === 'number' ? entry.fiber.state : null,
           connectionState: 'unknown',
+          // The page edits these through configEditor.edit; inherited definitions stay read-only.
+          editable: describeConfig(entryConfig),
+          inherited: Object.keys(inherited ?? {}).length > 0,
+          failOnStartupError: entryConfig.failOnStartupError === true,
         });
       }
     } catch {
@@ -131,6 +138,22 @@ export function createDiscovery(ctx) {
       }
     }
     assertCurrent(target, signal);
+    const candidates = tools.filter(({ name }) => name.startsWith('mcp__')).map((tool) => ({
+      ...tool,
+      evidence: 'name-convention',
+      connectionState: 'unknown',
+    }));
+    // A server whose connection or tool synchronization failed keeps its entry loaded, so the only
+    // symptom is an empty tool list. Report those names instead of leaving the page to infer it.
+    const nameCounts = new Map();
+    for (const row of configured) {
+      if (typeof row.serverName !== 'string' || !row.serverName) continue;
+      nameCounts.set(row.serverName, (nameCounts.get(row.serverName) ?? 0) + 1);
+    }
+    const emptyServers = toolsAvailable
+      ? [...nameCounts].filter(([serverName, count]) => count === 1
+        && !candidates.some((tool) => tool.name.startsWith(`mcp__${serverName}__`))).map(([serverName]) => serverName)
+      : [];
     return {
       context: target.context,
       toolsAvailable,
@@ -138,12 +161,9 @@ export function createDiscovery(ctx) {
       provenanceComplete: false,
       connectionStateSupported: false,
       configured,
-      candidates: tools.filter(({ name }) => name.startsWith('mcp__')).map((tool) => ({
-        ...tool,
-        evidence: 'name-convention',
-        connectionState: 'unknown',
-      })),
+      candidates,
       tools,
+      emptyServers,
       warnings,
     };
   }

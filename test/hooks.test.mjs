@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import { act } from 'react-test-renderer';
 import runtimeFixture from '@deepseek-ai/dsh/package.json' with { type: 'json' };
-import './managed-mcp.test.mjs';
+import './mcp-config.test.mjs';
 import { check, fixture, page, tick, writeReport } from './regression.test.mjs';
 import { createManagedHooks, normalizeHook, hookEvents, truncateArtifact, hookArtifactPath } from './managed-hooks.js';
 
@@ -379,12 +379,9 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
 
   await check('Every privileged write RPC refuses a caller that is not the confirming owner', async (t) => {
     for (const options of [{ admitDenied: true }, { peerInteractions: 'none' }]) {
-      const host = await fixture({ hooks: true, managed: true, ...options }); t.after(() => host.close());
+      const host = await fixture({ hooks: true, ...options }); t.after(() => host.close());
       for (const [method, payload] of [
-        ['mcp.add', { sessionId: '', serverName: 'probe', definition: { transport: 'stdio', command: 'fixture-command', args: [] } }],
-        ['mcp.retry', { sessionId: '', serverName: 'probe' }],
-        ['mcp.upsert', { entryId: 'include:fixture', configPath: 'maps.A', name: 'probe', definition: { command: 'fixture' } }],
-        ['mcp.remove', { entryId: 'include:fixture', configPath: 'maps.A', name: 'demo', expectedRevision: 'x' }],
+        ['mcp.update', { sessionId: '', entryId: 'include:mcp-probe', patch: { toolCallTimeoutMs: 1000 } }],
         ['skills.register', { sessionId: '', name: 'probe-skill', description: 'Fixture', content: 'Fixture body' }],
         ['skills.unregister', { sessionId: '', name: 'probe-skill' }],
         ['hooks.upsert', { name: 'probe', definition: definition() }],

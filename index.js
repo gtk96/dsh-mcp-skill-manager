@@ -1,8 +1,8 @@
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
-import { createManagedMcp, normalizeServer, ManagedMcpError } from './managed-mcp.js';
+import { createMcpConfig, McpConfigError } from './mcp-config.js';
 import { createManagedHooks, ManagedHooksError } from './managed-hooks.js';
 
 export const name = 'mcp-skill-manager';
@@ -11,111 +11,13 @@ export const inject = ['configEditor', 'skills', 'tools'];
 class ManagerError extends Error {}
 
 const rpcPrefix = 'mcp-skill-manager.';
-/** Bookkeeping field the page rewrites to make DSH remount a native MCP row. Never read by DSH itself. */
-const reconnectField = 'mcpManagerReconnect';
 export const Config = z.object({
-  /** Dot path to the MCP server map in the selected DSH config entry. */
-  mcpConfigPath: z.string().default(''),
-  managedServers: z.dict(z.any()).default({}).volatile(),
   managedHooks: z.dict(z.any()).default({}).volatile(),
 });
 
-const secretName = /secret|token|password|credential|authorization|api.?key/i;
-const forbiddenPathParts = new Set(['__proto__', 'prototype', 'constructor']);
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function pathParts(path) {
-  if (typeof path !== 'string' || !path.trim()) {
-    throw new ManagerError('configPath must be a non-empty dot path');
-  }
-  const parts = path.split('.').map((part) => part.trim());
-  if (parts.some((part) => !part || forbiddenPathParts.has(part))) {
-    throw new ManagerError('configPath contains an invalid path segment');
-  }
-  return parts;
-}
-
-function getAt(root, parts) {
-  let value = root;
-  for (const part of parts) {
-    if (!isRecord(value)) return undefined;
-    value = value[part];
-  }
-  return value;
-}
-
-function updatePath(root, parts, updateLeaf) {
-  const next = { ...root };
-  let source = root;
-  let target = next;
-  for (const part of parts.slice(0, -1)) {
-    const sourceChild = isRecord(source[part]) ? source[part] : {};
-    const targetChild = { ...sourceChild };
-    target[part] = targetChild;
-    source = sourceChild;
-    target = targetChild;
-  }
-  const leafKey = parts.at(-1);
-  const sourceLeaf = isRecord(source[leafKey]) ? source[leafKey] : {};
-  target[leafKey] = updateLeaf({ ...sourceLeaf });
-  return next;
-}
-
-function effectiveConfig(row) {
-  return isRecord(row.entry?.options?.config) ? row.entry.options.config : {};
-}
-
-function entryKeys(entry) {
-  return [entry?.id, entry?.options?.id, entry?.options?.name]
-    .filter((value) => typeof value === 'string');
-}
-
-function entrySummary(entry) {
-  return {
-    id: entry.id,
-    patchId: entry.options?.id,
-    name: entry.options?.name,
-  };
-}
-
-function serverRevision(key, entryId, parts, serverName, present, value) {
-  return createHmac('sha256', key).update(JSON.stringify([entryId, parts.join('.'), serverName, present, value])).digest('hex');
-}
-
-function redactServer(server, revision) {
-  if (!isRecord(server)) return { type: Array.isArray(server) ? 'array' : typeof server, revision };
-  return {
-    revision,
-    fields: Object.keys(server),
-    values: Object.fromEntries(
-      Object.entries(server)
-        .filter(([key]) => !secretName.test(key))
-        .map(([key, value]) => [key, typeof value === 'string' ? '[configured]' : Array.isArray(value) ? '[array]' : isRecord(value) ? '[object]' : value]),
-    ),
-  };
-}
-
-function readMcpCatalog(ctx, config, request, revisionKey) {
-  const requestedPath = typeof request.configPath === 'string' && request.configPath.trim()
-    ? request.configPath
-    : config.mcpConfigPath;
-  const parts = typeof requestedPath === 'string' && requestedPath.trim()
-    ? pathParts(requestedPath)
-    : undefined;
-  const entries = ctx.configEditor.configuration().map((row) => {
-    const effective = effectiveConfig(row);
-    const servers = parts ? getAt(effective, parts) : undefined;
-    return {
-      entry: entrySummary(row.entry),
-      servers: isRecord(servers)
-        ? Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))]))
-        : {},
-    };
-  });
-  return { configPath: parts?.join('.') ?? '', entries };
 }
 
 function tool(name, description, parameters, execute) {
@@ -168,7 +70,7 @@ function tool(name, description, parameters, execute) {
       try {
         return await execute(args, exec);
       } catch (error) {
-        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError || error instanceof ManagedHooksError) throw error;
+        if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof McpConfigError || error instanceof ManagedHooksError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -200,13 +102,9 @@ export function apply(ctx, config = {}) {
   const revisionKey = randomBytes(32);
   const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx, discovery.serviceFor);
-  const managedMcp = createManagedMcp(ctx, config, compatibility);
+  const mcpConfig = createMcpConfig(ctx, compatibility);
   const managedHooks = createManagedHooks(ctx, config, compatibility);
-  const discoverMcp = async (target, signal) => {
-    const result = await discovery.mcp(target, signal);
-    result.configured.push(...managedMcp.catalog().servers);
-    return result;
-  };
+  const discoverMcp = (target, signal) => discovery.mcp(target, signal);
   const runtimeSkills = new Map();
   const pendingSkills = new Set();
   const pendingUnregister = new Set();
@@ -214,155 +112,19 @@ export function apply(ctx, config = {}) {
   const runtimeProvider = `${name}:${randomUUID()}`;
   const mcpTool = tool(
     'dsh_manage_mcp_servers',
-    'Discover MCP-named tools and native configuration sources in the calling Agent scope, or read an explicit configuration map. Discovery reports connectivity as unknown. MCP configuration is changed only by a person in the settings page.',
+    'Discover the MCP servers configured in this Profile, which of their tools are registered in the calling Agent scope, and which servers expose no tools at all. Connectivity is reported as unknown. MCP configuration is changed only by a person in the settings page.',
     {
-      action: { type: 'string', required: true, enum: ['discover', 'list'] },
-      configPath: { type: 'string', description: 'Dot path to the MCP server map, for example the path configured for this plugin.' },
+      action: { type: 'string', required: true, enum: ['discover'] },
     },
     async (args, exec) => {
       exec.signal.throwIfAborted();
       const action = requireString(args.action, 'action');
-      if (action !== 'discover' && action !== 'list') throw new ManagerError('MCP 配置只能由人在设置页修改；此工具只提供发现与读取。');
-      const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
-        ? args.configPath
-        : config.mcpConfigPath;
-      if (action === 'discover' || !configuredPath?.trim()) {
-        return { action, ...await discoverMcp(discovery.view({}, exec.agent), exec.signal) };
-      }
-      const parts = pathParts(configuredPath);
-      return {
-        action,
-        configPath: parts.join('.'),
-        entries: ctx.configEditor.configuration().map((row) => {
-          const servers = getAt(effectiveConfig(row), parts);
-          if (!isRecord(servers)) return undefined;
-          return {
-            entry: entrySummary(row.entry),
-            servers: Object.fromEntries(Object.entries(servers).map(([serverName, value]) => [serverName, redactServer(value, serverRevision(revisionKey, row.entry.id, parts, serverName, true, value))])),
-          };
-        }).filter(Boolean),
-      };
+      if (action !== 'discover') throw new ManagerError('MCP 配置只能由人在设置页修改；此工具只提供发现。');
+      return { action, ...await discoverMcp(discovery.view({}, exec.agent), exec.signal) };
     },
   );
   /** Shared MCP map writer for the settings page; the Agent tool refuses these actions before reaching it. */
-  async function mcpWrite(action, args, exec) {
-      const configuredPath = typeof args.configPath === 'string' && args.configPath.trim()
-        ? args.configPath
-        : config.mcpConfigPath;
-      await compatibility.assertWrite('mcp', exec.signal, exec.agent);
-      const rows = ctx.configEditor.configuration();
-      const entryId = requireString(args.entryId, 'entryId');
-      const parts = pathParts(configuredPath);
-      const matches = rows.filter(({ entry }) => entryKeys(entry).includes(entryId));
-      if (matches.length > 1) throw new ManagerError('Multiple config entries match entryId; use the unique entry id');
-      const row = matches[0];
-      if (!row) throw new ManagerError(`No active config entry matches ${entryId}`);
-      if (managedMcp.owns(row.entry)) throw new ManagerError('本插件的托管 MCP 配置须使用专用新增和重试入口，不能通过高级映射修改。');
-      const serverName = requireString(args.name, 'name');
-      if (forbiddenPathParts.has(serverName)) throw new ManagerError('name is not a valid server key');
-      if (action === 'upsert' && !isRecord(args.definition)) {
-        throw new ManagerError('definition must be a JSON object');
-      }
-      if (action !== 'upsert' && action !== 'remove') throw new ManagerError('action must be list, upsert, or remove');
-
-      const inheritedServers = getAt(row.inherited, parts);
-      const overrideServers = getAt(row.override, parts);
-      const inheritedHasServer = isRecord(inheritedServers) && Object.hasOwn(inheritedServers, serverName);
-      const overrideHasServer = isRecord(overrideServers) && Object.hasOwn(overrideServers, serverName);
-      if (action === 'remove' && inheritedHasServer && !overrideHasServer) {
-        throw new ManagerError(`Cannot remove inherited MCP server ${serverName}; edit its owning config entry instead`);
-      }
-      if (action === 'remove' && !overrideHasServer) {
-        return { action, entryId, configPath: parts.join('.'), name: serverName, changed: false };
-      }
-
-      let inheritedRemains = false;
-      exec.signal.throwIfAborted();
-      // The page's generic map writer accepts any server JSON, so the credential rule is enforced before any write.
-      if (action === 'upsert' && isRecord(args.definition)
-        && (args.definition.transport === 'stdio' || args.definition.transport === 'streamable-http')) {
-        normalizeServer(serverName, args.definition);
-      }
-      await ctx.configEditor.edit(row.entry, (current, inherited) => {
-        exec.signal.throwIfAborted();
-        if (action === 'upsert') {
-          const currentServers = getAt(current, parts);
-          const inheritedMap = getAt(inherited, parts);
-          const hasOverride = isRecord(currentServers) && Object.hasOwn(currentServers, serverName);
-          const hasInherited = isRecord(inheritedMap) && Object.hasOwn(inheritedMap, serverName);
-          const exists = hasOverride || hasInherited;
-          if (exists) {
-            const value = hasOverride ? currentServers[serverName] : inheritedMap[serverName];
-            const revision = serverRevision(revisionKey, row.entry.id, parts, serverName, true, value);
-            if (args.expectedRevision !== revision) throw new ManagerError(`Server ${serverName} changed or lacks a revision; refresh the catalog before replacing it`);
-          } else if (args.expectedRevision !== undefined) {
-            throw new ManagerError(`Server ${serverName} changed or was removed; refresh the catalog before replacing it`);
-          }
-          // The caller's revision check stays inside the callback; definition shape was validated above.
-          return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
-            servers[serverName] = args.definition;
-            return servers;
-          });
-        }
-        if (action === 'remove') {
-          const inheritedMap = getAt(inherited, parts);
-          const currentServers = getAt(current, parts);
-          if (!isRecord(currentServers) || !Object.hasOwn(currentServers, serverName)) {
-            throw new ManagerError(`Server ${serverName} changed or was removed; refresh the catalog before removing it`);
-          }
-          const revision = serverRevision(revisionKey, row.entry.id, parts, serverName, true, currentServers[serverName]);
-          if (args.expectedRevision !== revision) {
-            throw new ManagerError(`Server ${serverName} changed or lacks a revision; refresh the catalog before removing it`);
-          }
-          inheritedRemains = isRecord(inheritedMap) && Object.hasOwn(inheritedMap, serverName);
-          return updatePath(isRecord(current) ? current : {}, parts, (servers) => {
-            if (inheritedRemains) servers[serverName] = inheritedMap[serverName];
-            else delete servers[serverName];
-            return servers;
-          });
-        }
-        throw new ManagerError('action must be list, upsert, or remove');
-      });
-      return {
-        action,
-        entryId,
-        configPath: parts.join('.'),
-        name: serverName,
-        changed: true,
-        ...(action === 'remove' && inheritedRemains ? { inheritedRemains: true } : {}),
-      };
-  }
   const disposeMcpTool = ctx.tools.register(mcpTool);
-  /**
-   * Recreate a native MCP entry. DSH connects a native MCP row once at startup and exposes no reconnect
-   * call, so the only way to retry is to make its config differ: a bookkeeping field is rewritten and the
-   * Loader remounts the row. The server's own fields are preserved verbatim.
-   */
-  async function reconnectNativeMcp(args, exec) {
-    await compatibility.assertWrite('mcp', exec.signal, exec.agent);
-    const entryId = requireString(args.entryId, 'entryId');
-    const rows = ctx.configEditor.configuration();
-    const matches = rows.filter(({ entry }) => entryKeys(entry).includes(entryId));
-    if (matches.length > 1) throw new ManagerError(`多个配置条目匹配 ${entryId}；请使用唯一的条目 id。`);
-    const row = matches[0];
-    if (!row) throw new ManagerError(`没有匹配 ${entryId} 的活动配置条目；可用的条目：${rows.map(({ entry }) => entryKeys(entry)[0]).join(', ') || '无'}`);
-    if (managedMcp.owns(row.entry)) throw new ManagerError('本插件的托管连接请使用「重试加载 MCP」。');
-    if (isRecord(row.inherited) && Object.keys(row.inherited).length) {
-      throw new ManagerError(`条目 ${entryId} 的定义来自继承层（${Object.keys(row.inherited).join(', ')}），重连会改动其来源层，已拒绝。`);
-    }
-    let attempt = 0;
-    exec.signal.throwIfAborted();
-    await ctx.configEditor.edit(row.entry, (current) => {
-      exec.signal.throwIfAborted();
-      if (!isRecord(current)) throw new ManagerError('该条目的配置不是对象，无法重连。');
-      const previous = isRecord(current[reconnectField]) ? current[reconnectField] : {};
-      attempt = (Number.isSafeInteger(previous.attempt) ? previous.attempt : 0) + 1;
-      // Only this bookkeeping field changes, so the row keeps its command, url and credentials.
-      return { ...current, [reconnectField]: { attempt } };
-    });
-    return { reconnected: true, entryId, attempt };
-  }
-
   const skillsTool = tool(
     'dsh_manage_skills',
     'List and read the effective DSH skill catalog. Registering or unregistering a Runtime Skill is done only by a person in the MCP & Skills settings page, because it injects instructions every later turn sees.',
@@ -511,30 +273,11 @@ export function apply(ctx, config = {}) {
         case 'contexts.list':
           value = await discovery.contexts(signal);
           break;
-        case 'mcp.managed':
-          await managedMcp.sync();
-          value = managedMcp.catalog();
-          break;
-        case 'mcp.retry':
-          value = await managedMcp.retry(args, signal);
-          break;
-        case 'mcp.reconnect':
-          value = await reconnectNativeMcp(args, exec);
-          break;
-        case 'mcp.add':
-          value = await managedMcp.add(args, signal);
-          break;
         case 'mcp.discover':
           value = await discoverMcp(discovery.view(args), signal);
           break;
-        case 'mcp.catalog':
-          value = readMcpCatalog(ctx, config, args, revisionKey);
-          break;
-        case 'mcp.upsert':
-          value = await mcpWrite('upsert', args, exec);
-          break;
-        case 'mcp.remove':
-          value = await mcpWrite('remove', args, exec);
+        case 'mcp.update':
+          value = await mcpConfig.update(args, exec);
           break;
         case 'hooks.list':
         case 'hooks.upsert':
@@ -591,7 +334,7 @@ export function apply(ctx, config = {}) {
       }
       return { ok: true, value };
     } catch (error) {
-      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof ManagedMcpError || error instanceof ManagedHooksError;
+      const knownError = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError || error instanceof McpConfigError || error instanceof ManagedHooksError;
       return {
         ok: false,
         error: {
@@ -602,9 +345,9 @@ export function apply(ctx, config = {}) {
       };
     }
   };
-  const rpcMethods = ['mcp.retry', 'mcp.reconnect', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
+  const rpcMethods = ['compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.update', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
   /** Enabling a Hook or saving a stdio MCP server runs a command on this machine, so the caller must be the confirming owner session. */
-  const privilegedWriteMethods = new Set(['hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry', 'mcp.add', 'mcp.retry', 'mcp.reconnect', 'mcp.upsert', 'mcp.remove', 'mcp.managed', 'contexts.list', 'skills.register', 'skills.unregister']);
+  const privilegedWriteMethods = new Set(['hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry', 'mcp.update', 'contexts.list', 'skills.register', 'skills.unregister']);
   const admitPrivilegedWrite = (peer) => {
     if (!isRecord(peer?.principal) || peer.principal.kind !== 'owner') throw new ManagerError('此操作会写入可执行配置；调用方必须是本机所有者会话。');
     if (peer.interactions !== 'answer') throw new ManagerError('此操作会写入可执行配置；需要能够确认操作的本机会话。');

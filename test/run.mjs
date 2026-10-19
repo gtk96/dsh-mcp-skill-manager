@@ -10,10 +10,10 @@ const testRoot = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(testRoot, '..');
 const fixture = resolve(testRoot, '.fixture');
 mkdirSync(fixture, { recursive: true });
-for (const [source, destination] of [['index.js', 'host.mjs'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['managed-mcp.js', 'managed-mcp.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
+for (const [source, destination] of [['index.js', 'host.mjs'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['mcp-config.js', 'mcp-config.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
   copyFileSync(resolve(repo, source), resolve(fixture, destination));
 }
-for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compatibility.test.mjs', 'managed-mcp.test.mjs', 'hooks.test.mjs']) {
+for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compatibility.test.mjs', 'mcp-config.test.mjs', 'hooks.test.mjs']) {
   copyFileSync(resolve(testRoot, name), resolve(fixture, name));
 }
 const runtimeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh');

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+
+/** Runtime versions this plugin has an isolated regression for. */
 export const testedRuntimeVersions = Object.freeze(['0.2.0-rc.2', '0.2.1-rc.2']);
 
 export class CompatibilityError extends Error {}
@@ -17,55 +19,53 @@ export async function readRuntimeVersion() {
 
 const hasMethods = (service, names) => names.every((name) => typeof service?.[name] === 'function');
 
-/** Method checks do not execute services or establish their behavioral compatibility. */
-export function createCompatibility(ctx, serviceFor, runtimeReader = readRuntimeVersion) {
-  async function report(agent) {
+/**
+ * Version and capability gate for writes. Method checks prove presence, not behavior, so a version
+ * outside the tested list stays read-only regardless of what it appears to expose.
+ */
+export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
+  async function report() {
     let runtimeVersion = null;
-    try { runtimeVersion = await runtimeReader(); } catch { /* An unidentifiable runtime remains read-only. */ }
+    try { runtimeVersion = await runtimeReader(); } catch { /* An unidentifiable runtime stays read-only. */ }
     if (typeof runtimeVersion !== 'string') runtimeVersion = null;
     const versionStatus = runtimeVersion === null ? 'unknown'
       : testedRuntimeVersions.includes(runtimeVersion) ? 'tested' : 'unverified';
     const configEditor = ctx.get('configEditor');
-    const scopedService = (name) => {
-      try { return serviceFor(name, agent); } catch { return undefined; }
-    };
-    const skills = scopedService('skills');
-    const tools = scopedService('tools');
+    const skills = ctx.get('skills');
     const capabilities = {
       mcpCatalog: hasMethods(configEditor, ['configuration']),
-      mcpDiscovery: hasMethods(tools, ['schemas', 'get']),
-      skillCatalog: hasMethods(skills, ['snapshot', 'get']),
       configEdit: hasMethods(configEditor, ['configuration', 'edit']),
-      runtimeSkills: hasMethods(skills, ['snapshot', 'get']) && hasMethods(ctx.get('skills'), ['register']),
-      sessionSelection: hasMethods(ctx.get('agents'), ['list', 'get']),
-      presetScope: hasMethods(ctx.get('agentPresets'), ['serviceFor', 'composedPreset']),
-      hookCatalog: hasMethods(configEditor, ['configuration']),
-      hookRuntime: hasMethods(ctx.get('shell'), ['resolve', 'execute'])
-        && hasMethods(ctx.get('sessionProjections'), ['stateOf'])
-        && hasMethods(ctx.get('workingDirectory'), ['get', 'ensure']),
+      runtimeSkills: hasMethods(skills, ['snapshot', 'get', 'register']),
+      patchWrite: typeof ctx.get('profileContext')?.patchPath === 'string',
     };
     const tested = versionStatus === 'tested';
+    const writes = {
+      mcp: tested && capabilities.configEdit && capabilities.patchWrite,
+      skills: tested && capabilities.runtimeSkills,
+    };
+    const reason = versionStatus === 'unknown' ? '无法识别 DSH 运行版本'
+      : versionStatus === 'unverified' ? `DSH ${runtimeVersion} 未通过本插件的版本回归`
+        : !capabilities.configEdit ? '缺少配置编辑接口'
+          : !capabilities.patchWrite ? '该 Profile 没有可写的 patch 文件'
+            : null;
     return {
-      protocolVersion: 1,
       pluginVersion: manifest.version,
       runtimeVersion,
       versionStatus,
       testedRuntimeVersions: [...testedRuntimeVersions],
-      installRange: manifest.peerDependencies['@deepseek-ai/dsh'],
       capabilities,
-      writes: { mcp: tested && capabilities.configEdit, skills: tested && capabilities.runtimeSkills, hooks: runtimeVersion === '0.2.1-rc.2' && capabilities.configEdit && capabilities.hookRuntime },
+      writes,
+      reason,
       checks: 'method-presence-only',
     };
   }
 
-  async function assertWrite(kind, signal, agent) {
-    const status = await report(agent);
+  async function assertWrite(kind, signal) {
+    const status = await report();
     signal?.throwIfAborted();
     if (!status.writes[kind]) {
-      const reason = status.versionStatus === 'unknown' ? '无法识别 DSH 运行版本'
-        : status.versionStatus === 'unverified' ? `DSH ${status.runtimeVersion} 未通过本插件的版本回归`
-        : '缺少此操作所需的 DSH 接口';
-      throw new CompatibilityError(`${reason}；当前操作只读，写入已阻止。请查看兼容检查。`);
+      const specific = kind === 'skills' && status.reason === null ? '缺少 Runtime Skill 接口' : status.reason;
+      throw new CompatibilityError(`${specific ?? '当前 DSH 版本不允许写入'}；操作已阻止。`);
     }
   }
 

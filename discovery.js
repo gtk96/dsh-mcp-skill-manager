@@ -1,172 +1,155 @@
-import { describeConfig, MCP_CLIENT } from './mcp-config.js';
+/**
+ * Read model for the MCP page.
+ *
+ * Every server is one `@deepseek-ai/dsh-mcp-client` Loader entry. Entries come from `ctx.loader.entries()`
+ * so disabled rows stay visible; `ctx.configEditor.configuration()` supplies which layer owns the current
+ * definition. Tools are grouped by the documented `mcp__<serverName>__<tool>` prefix — prefix matching is
+ * evidence of naming, not of provenance, so the page never claims a tool came from a server.
+ */
+
+import { readFileSync } from 'node:fs';
+
+import { MCP_CLIENT, describeConfig, isMcpEntry, transportOf } from './mcp-config.js';
+import { insertIds, parsePatch } from './mcp-patch.js';
 
 export { MCP_CLIENT };
 
 export class DiscoveryError extends Error {}
 
+/** The line shown under a server name; credentials in a URL's userinfo never reach the page. */
+function summarize(config, transport) {
+  if (transport === 'stdio') {
+    const command = typeof config?.command === 'string' ? config.command : '';
+    const args = Array.isArray(config?.args) ? config.args.filter((arg) => typeof arg === 'string') : [];
+    return [command, ...args].join(' ').trim() || '—';
+  }
+  if (typeof config?.url !== 'string') return '—';
+  try {
+    const url = new URL(config.url);
+    if (url.username || url.password) {
+      url.username = '';
+      url.password = '';
+    }
+    return url.toString();
+  } catch {
+    // An unparsable URL is shown verbatim; it cannot carry a parsed userinfo section.
+    return config.url;
+  }
+}
+
 export function createDiscovery(ctx) {
   const optional = (name) => ctx.get(name);
-  const serviceFor = (name, agent) => {
-    const presets = optional('agentPresets');
-    return (agent && presets?.serviceFor(agent, name)) || optional(name);
-  };
-  const presetOf = (agent) => agent
-    ? optional('agentPresets')?.composedPreset(agent.ctx) ?? agent.session?.header?.agentPreset
-    : undefined;
 
-  function view(args = {}, fallbackAgent) {
-    if (args.sessionId !== undefined && typeof args.sessionId !== 'string') {
-      throw new DiscoveryError('sessionId must be a string');
-    }
-    const explicit = typeof args.sessionId === 'string';
-    const sessionId = explicit ? args.sessionId.trim() : fallbackAgent?.id ?? '';
-    const agent = explicit
-      ? (sessionId ? optional('agents')?.get(sessionId) : undefined)
-      : fallbackAgent;
-    if (sessionId && !agent) {
-      throw new DiscoveryError('Selected session has no live Agent; open that session and refresh. Its global view is not used as a substitute.');
-    }
-    return {
-      agent,
-      context: {
-        sessionId,
-        kind: agent ? 'agent' : 'profile',
-        cwd: agent?.session?.header?.cwd ?? null,
-        preset: presetOf(agent) ?? null,
-      },
-    };
-  }
-
-  function assertCurrent(target, signal) {
-    signal?.throwIfAborted();
-    const agents = optional('agents');
-    if (target.agent && agents && agents.get(target.context.sessionId) !== target.agent) {
-      throw new DiscoveryError('Selected Agent changed or was unloaded; refresh the session list.');
-    }
-    if (target.agent && (presetOf(target.agent) ?? null) !== target.context.preset) {
-      throw new DiscoveryError('Selected Agent preset changed; refresh this view.');
-    }
-  }
-
-  async function contexts(signal) {
-    signal.throwIfAborted();
-    const agents = optional('agents')?.list() ?? [];
-    const live = new Map(agents.map((agent) => [agent.id, agent]));
-    const query = optional('sessionQuery');
-    const records = query
-      ? await query.listSessions(signal)
-      : (optional('sessions')?.list() ?? []).map((session) => ({ header: session.header }));
-    signal.throwIfAborted();
-    const headers = new Map(records.map((record) => [record.header.id, record.header]));
-    for (const agent of agents) headers.set(agent.id, agent.session?.header ?? { id: agent.id });
-    return {
-      contexts: [...headers.values()].map((header) => ({
-        sessionId: header.id,
-        cwd: header.cwd ?? null,
-        preset: live.has(header.id) ? presetOf(live.get(header.id)) ?? null : header.agentPreset ?? null,
-        live: live.has(header.id),
-      })),
-    };
-  }
-
-  async function mcp(target, signal) {
-    assertCurrent(target, signal);
-    const warnings = [];
-    let tools = [];
-    let toolsAvailable = false;
-    const configured = [];
-    const toolService = serviceFor('tools', target.agent);
-    const rootTools = optional('tools');
+  /** Ids this profile's own patch file inserts. */
+  function profilePatchFacts() {
+    const filename = optional('profileContext')?.patchPath;
+    if (typeof filename !== 'string') return new Set();
     try {
-      if (typeof toolService?.schemas !== 'function') throw new Error('unavailable');
-      tools = toolService.schemas(target.agent).map(({ name }) => {
-        const definition = toolService.get?.(name, target.agent);
-        const globalDefinition = rootTools?.get?.(name);
-        return {
-          name,
-          definitionView: !target.agent ? 'profile'
-            : !definition ? 'unknown'
-            : definition === globalDefinition ? 'same-as-profile' : 'session-specific',
-        };
+      return insertIds(parsePatch(readFileSync(filename, 'utf8'), filename));
+    } catch {
+      // An unreadable patch file is reported by the write path; the page still lists live entries.
+      return new Set();
+    }
+  }
+
+  /**
+   * Rows the official editor can address. `configEditor.configuration()` only returns entries whose
+   * profile patch id is unique and whose parent tree belongs to the root Include, so editing anything
+   * outside it would fail at write time.
+   */
+  function addressableRows() {
+    const editor = optional('configEditor');
+    if (typeof editor?.configuration !== 'function') return new Map();
+    const rows = new Map();
+    for (const row of editor.configuration()) {
+      if (row?.entry !== undefined) rows.set(row.entry, row);
+    }
+    return rows;
+  }
+
+  /** Tool names visible to the calling scope; an unreadable registry is reported, never treated as empty. */
+  function toolNames(agent) {
+    const presets = optional('agentPresets');
+    const scoped = (agent && presets?.serviceFor(agent, 'tools')) || optional('tools');
+    if (typeof scoped?.schemas !== 'function') return { names: [], available: false };
+    return { names: scoped.schemas(agent).map(({ name }) => name), available: true };
+  }
+
+  function entries() {
+    const inserted = profilePatchFacts();
+    const addressable = addressableRows();
+    const rows = [];
+    for (const entry of ctx.loader.entries()) {
+      if (!isMcpEntry(entry) || entry.options.group) continue;
+      const config = entry.options.config ?? {};
+      const transport = transportOf(config);
+      const disabled = entry.disabled === true;
+      const loaded = entry.fiber !== undefined && entry.fiber.state === 2;
+      const row = addressable.get(entry);
+      rows.push({
+        entryId: entry.options.id,
+        serverName: typeof config.serverName === 'string' ? config.serverName : null,
+        transport,
+        summary: summarize(config, transport),
+        source: inserted.has(entry.options.id) ? 'profile' : 'bundle',
+        // Only a row this profile's patch file inserts can be deleted; anything else can only be disabled.
+        removable: inserted.has(entry.options.id),
+        disabled,
+        loadFailed: entry.fiber?.state === 3,
+        editable: row !== undefined && !disabled && loaded,
+        editableReason: row === undefined ? 'unaddressable' : disabled ? 'disabled' : !loaded ? 'unloaded' : null,
+        // The override is what a reset would drop; an inserted row has no inherited definition to return to.
+        overridden: row !== undefined && Object.keys(row.override ?? {}).length > 0,
+        config: describeConfig(config),
       });
-      toolsAvailable = true;
-    } catch {
-      warnings.push('所选作用域的工具目录读取失败，不能据此判断 MCP 是否存在。');
     }
-    try {
-      for (const { entry, inherited } of ctx.configEditor.configuration()) {
-        if (entry.options?.name !== MCP_CLIENT) continue;
-        const entryConfig = entry.options.config ?? {};
-        configured.push({
-          kind: 'profile-config',
-          entryId: entry.id,
-          patchId: entry.options.id,
-          serverName: typeof entryConfig.serverName === 'string' ? entryConfig.serverName : null,
-          moduleName: MCP_CLIENT,
-          fiberState: typeof entry.fiber?.state === 'number' ? entry.fiber.state : null,
-          connectionState: 'unknown',
-          // The page edits these through configEditor.edit; inherited definitions stay read-only.
-          editable: describeConfig(entryConfig),
-          inherited: Object.keys(inherited ?? {}).length > 0,
-          failOnStartupError: entryConfig.failOnStartupError === true,
-        });
-      }
-    } catch {
-      warnings.push('Profile 中的原生 MCP 配置条目读取失败。');
-    }
-    const presets = optional('agentPresets');
-    if (target.context.preset && presets) {
-      try {
-        const inventory = await presets.compositionInventory();
-        for (const preset of inventory) {
-          if (preset.id !== target.context.preset) continue;
-          for (const row of preset.rows) {
-            if (row.moduleName !== MCP_CLIENT) continue;
-            configured.push({
-              kind: 'preset-config',
-              preset: preset.id,
-              entryId: row.entryId,
-              moduleName: MCP_CLIENT,
-              enabled: row.enabled,
-              fiberState: typeof row.fiberState === 'number' ? row.fiberState : null,
-              connectionState: 'unknown',
-            });
-          }
-        }
-      } catch {
-        warnings.push('所选预设中的 MCP 配置条目读取失败。');
+    const counts = new Map();
+    for (const row of rows) counts.set(row.entryId, (counts.get(row.entryId) ?? 0) + 1);
+    for (const row of rows) {
+      if (counts.get(row.entryId) > 1) {
+        row.editable = false;
+        row.editableReason = 'duplicate';
+        row.removable = false;
       }
     }
-    assertCurrent(target, signal);
-    const candidates = tools.filter(({ name }) => name.startsWith('mcp__')).map((tool) => ({
-      ...tool,
-      evidence: 'name-convention',
-      connectionState: 'unknown',
-    }));
-    // A server whose connection or tool synchronization failed keeps its entry loaded, so the only
-    // symptom is an empty tool list. Report those names instead of leaving the page to infer it.
-    const nameCounts = new Map();
-    for (const row of configured) {
-      if (typeof row.serverName !== 'string' || !row.serverName) continue;
-      nameCounts.set(row.serverName, (nameCounts.get(row.serverName) ?? 0) + 1);
+    rows.sort((left, right) => (left.serverName ?? left.entryId).localeCompare(right.serverName ?? right.entryId));
+    return rows;
+  }
+
+  /**
+   * Build the page model.
+   * @param {{ agent?: object }} [target] Calling scope for tool visibility; the profile when omitted.
+   * @returns The server rows and the tool grouping derived from the calling scope.
+   */
+  function mcp(target = {}) {
+    const servers = entries();
+    const { names, available } = toolNames(target.agent);
+    const candidates = names.filter((name) => name.startsWith('mcp__'));
+    const counts = new Map();
+    for (const server of servers) {
+      if (server.serverName) counts.set(server.serverName, (counts.get(server.serverName) ?? 0) + 1);
     }
-    const emptyServers = toolsAvailable
-      ? [...nameCounts].filter(([serverName, count]) => count === 1
-        && !candidates.some((tool) => tool.name.startsWith(`mcp__${serverName}__`))).map(([serverName]) => serverName)
-      : [];
+    const tools = [];
+    for (const server of servers) {
+      const unique = server.serverName !== null && counts.get(server.serverName) === 1;
+      const prefix = unique ? `mcp__${server.serverName}__` : undefined;
+      server.tools = prefix === undefined ? [] : candidates.filter((name) => name.startsWith(prefix));
+      server.toolCount = server.tools.length;
+      // A server that returns no tools while its siblings do is the only symptom the bridge exposes.
+      server.empty = available && !server.disabled && server.serverName !== null && unique && server.tools.length === 0;
+      tools.push(...server.tools);
+    }
+    const grouped = new Set(tools);
     return {
-      context: target.context,
-      toolsAvailable,
-      complete: warnings.length === 0,
-      provenanceComplete: false,
-      connectionStateSupported: false,
-      configured,
-      candidates,
-      tools,
-      emptyServers,
-      warnings,
+      toolsAvailable: available,
+      servers,
+      ungrouped: candidates.filter((name) => !grouped.has(name)),
+      duplicateServerNames: [...counts].filter(([, count]) => count > 1).map(([serverName]) => serverName),
     };
   }
 
-  return { view, contexts, mcp, assertCurrent, serviceFor };
+  return { mcp, entries, serviceFor: (serviceName, agent) => {
+    const presets = optional('agentPresets');
+    return (agent && presets?.serviceFor(agent, serviceName)) || optional(serviceName);
+  } };
 }

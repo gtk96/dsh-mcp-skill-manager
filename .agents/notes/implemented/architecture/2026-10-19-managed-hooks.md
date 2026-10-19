@@ -1,6 +1,6 @@
 # Agent Note: DSH Hook 规则归管理插件托管
 
-Status: implemented — Settings 页的 Hooks 页签在 Profile 内托管命令 Hook 规则，执行仍由官方桥接器负责。
+Status: superseded — Hooks 页签与 `managed-hooks.js` 已在 0.8.0 移除；保留本文作为当时的设计记录。
 
 ## Problem
 

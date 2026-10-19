@@ -1,6 +1,6 @@
 # Agent Note: MCP 配置所有权与增量加载
 
-Status: implemented — 手动 MCP 定义属于管理插件的实时配置。
+Status: superseded — 管理插件不再持有自己的 MCP 配置；见 2026-10-19 与 2026-10-20 两条记录。
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Agent Note: MCP 管理改为编辑 Profile 配置条目
 
-Status: implemented — Settings 的 MCP 页面编辑已有的 `@deepseek-ai/dsh-mcp-client` 条目，不再维护第二份 Server 列表。
+Status: partially superseded — 编辑路径仍经 `configEditor.edit()`，但继承层只读与「不创建、不删除条目」两条已被 2026-10-20 的 profile patch 决策取代。
 
 ## Problem
 

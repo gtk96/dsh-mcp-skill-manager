@@ -1,7 +1,7 @@
 {
   "name": "dsh-mcp-skill-manager",
-  "version": "0.7.0",
-  "description": "DeepSeek Harness plugin for MCP, Hook and runtime skill management",
+  "version": "0.8.0",
+  "description": "DeepSeek Harness plugin for managing MCP servers and runtime skills",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -18,7 +18,8 @@
     "discovery.js",
     "compatibility.js",
     "mcp-config.js",
-    "managed-hooks.js",
+    "mcp-patch.js",
+    "mcp-write.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
@@ -31,7 +32,11 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-connection", "@deepseek-ai/dsh-client-ui-settings"],
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
       "platform": "web",
       "external": []
     }
@@ -42,7 +47,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "^0.2.0-rc.2 || ^0.2.1-rc.2",
-    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2 || ^0.2.1-rc.2"
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-atomic-write": "^0.2.0-rc.2 || ^0.2.1-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
@@ -50,11 +56,13 @@
     },
     "@deepseek-ai/dsh-mcp-client": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-atomic-write": {
+      "optional": true
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-hooks-claude-code": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-hook-protocol": "0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "~3.18.4"
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "yaml": "^2.9.0"
   }
 }

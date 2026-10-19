@@ -10,40 +10,39 @@ const testRoot = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(testRoot, '..');
 const fixture = resolve(testRoot, '.fixture');
 mkdirSync(fixture, { recursive: true });
-for (const [source, destination] of [['index.js', 'host.mjs'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'], ['compatibility.js', 'compatibility.js'], ['mcp-config.js', 'mcp-config.js'], ['managed-hooks.js', 'managed-hooks.js'], ['package.json', 'package.json']]) {
-  copyFileSync(resolve(repo, source), resolve(fixture, destination));
-}
-for (const name of ['regression.test.mjs', 'session-discovery.test.mjs', 'compatibility.test.mjs', 'mcp-config.test.mjs', 'hooks.test.mjs']) {
-  copyFileSync(resolve(testRoot, name), resolve(fixture, name));
-}
+
+const sources = [
+  ['index.js', 'host.mjs'],
+  ['client.js', 'client.js'],
+  ['discovery.js', 'discovery.js'],
+  ['compatibility.js', 'compatibility.js'],
+  ['mcp-config.js', 'mcp-config.js'],
+  ['mcp-patch.js', 'mcp-patch.js'],
+  ['mcp-write.js', 'mcp-write.js'],
+  ['package.json', 'package.json'],
+];
+for (const [source, destination] of sources) copyFileSync(resolve(repo, source), resolve(fixture, destination));
+
+const suites = ['regression.test.mjs', 'mcp-patch.test.mjs', 'mcp-config.test.mjs', 'mcp-write.test.mjs', 'skills.test.mjs', 'client.test.mjs', 'compatibility.test.mjs'];
+for (const name of suites) copyFileSync(resolve(testRoot, name), resolve(fixture, name));
+
+// The runtime version is read through `@deepseek-ai/dsh/package.json`; the fixture provides only that file.
 const runtimeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh');
 mkdirSync(runtimeFixture, { recursive: true });
 writeFileSync(resolve(runtimeFixture, 'package.json'), JSON.stringify({
   name: '@deepseek-ai/dsh', version: runtimeVersion, type: 'module',
   exports: { './package.json': './package.json' },
 }) + '\n');
+
 const bridgeFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh-mcp-client');
 mkdirSync(bridgeFixture, { recursive: true });
 writeFileSync(resolve(bridgeFixture, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-mcp-client', type: 'module', exports: './index.js' }) + '\n');
-writeFileSync(resolve(bridgeFixture, 'index.js'), `export const name = 'fixture-mcp-bridge';
-export const inject = ['fixtureMcp'];
-export function apply(ctx, config) {
-  ctx.fixtureMcp.start(config);
-  ctx.effect(() => () => ctx.fixtureMcp.stop(config.serverName));
+writeFileSync(resolve(bridgeFixture, 'index.js'), 'export const name = "fixture-mcp-bridge";\n');
+
+await import(pathToFileURL(resolve(fixture, 'regression.test.mjs')).href);
+for (const name of suites.slice(1)) {
+  await import(pathToFileURL(resolve(fixture, name)).href);
 }
-`);
-const hooksFixture = resolve(fixture, 'node_modules/@deepseek-ai/dsh-hooks-claude-code');
-mkdirSync(hooksFixture, { recursive: true });
-writeFileSync(resolve(hooksFixture, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-hooks-claude-code', type: 'module', exports: './index.js' }) + '\n');
-writeFileSync(resolve(hooksFixture, 'index.js'), `import { readFileSync } from 'node:fs';
-export const name = 'fixture-hook-bridge';
-export const inject = ['fixtureHooks'];
-export function apply(ctx, config) {
-  const content = JSON.parse(readFileSync(config.configPath, 'utf8'));
-  ctx.fixtureHooks.start(content);
-  ctx.effect(() => () => ctx.fixtureHooks.stop());
-}
-`);
-await import(pathToFileURL(resolve(fixture, 'hooks.test.mjs')).href);
-await import(pathToFileURL(resolve(fixture, 'session-discovery.test.mjs')).href);
-await import(pathToFileURL(resolve(fixture, 'compatibility.test.mjs')).href);
+const { writeReport } = await import(pathToFileURL(resolve(fixture, 'regression.test.mjs')).href);
+await new Promise((done) => setTimeout(done, 50));
+writeReport();

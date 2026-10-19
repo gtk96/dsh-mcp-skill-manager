@@ -3,740 +3,1183 @@ var module = { exports: {} }; var exports = module.exports;
 const React = require("react");
 const h = React.createElement;
 
+/** Dictionary namespace; also the slot's locale seat. */
+const NS = "mcp-skill-manager";
+
+const zh = {
+  nav: "MCP 与 Skills",
+  "tabs.label": "管理类型",
+  "tab.mcp": "MCP Servers",
+  "tab.skills": "Skills",
+  "action.add": "新增 Server",
+  "action.refresh": "刷新",
+  "action.edit": "编辑",
+  "action.save": "保存",
+  "action.saving": "保存中…",
+  "action.cancel": "取消",
+  "action.remove": "删除",
+  "action.confirmRemove": "确认删除",
+  "action.enable": "启用",
+  "action.disable": "禁用",
+  "action.reset": "重置为默认",
+  "action.view": "查看正文",
+  "action.close": "关闭",
+  "action.unregister": "注销",
+  "action.confirmUnregister": "确认注销",
+  "action.addCredential": "添加一项",
+  "action.removeCredential": "删除",
+  "action.undoRemove": "撤销",
+  "action.advanced": "高级选项",
+  "state.loading": "正在读取…",
+  "state.disabled": "已禁用",
+  "source.profile": "本 Profile",
+  "source.bundle": "上层配置",
+  "source.bundleTitle": "来自插件包或上层组合；可以禁用，不能在这里删除。",
+  "mcp.empty": "还没有配置 MCP Server。",
+  "mcp.emptyHint": "使用右上角的「新增 Server」添加一个。",
+  "mcp.loadFailed": "这个 Server 加载失败。检查命令、地址和 DSH 日志。",
+  "mcp.noTools": "已配置，但没有返回工具。检查命令或地址，以及 Server 日志。",
+  "mcp.tools": "工具（{count}）",
+  "mcp.toolsUnavailable": "工具目录不可读，无法判断 Server 是否返回工具。",
+  "mcp.ungrouped": "未归属的 MCP 工具（{count}）",
+  "mcp.duplicate": "多个 Server 使用了相同名称：{names}。它们的工具无法归属。",
+  "mcp.enableFirst": "先启用再编辑。",
+  "mcp.notLoaded": "该条目未加载，无法编辑。",
+  "mcp.footnote": "变更写入本 Profile 的配置文件；上层配置只能在提供它的插件包里修改。",
+  "notice.applied": "已保存并生效。",
+  "notice.appliedSuffix": "，已生效。",
+  "notice.restartSuffix": "，重启 DSH 后生效。",
+  "notice.overriddenSuffix": "，但被更高优先级配置覆盖，当前未生效。",
+  "notice.restart": "已保存，重启 DSH 后生效。",
+  "notice.overridden": "已保存，但被更高优先级配置覆盖，当前未生效。",
+  "notice.removed": "已删除。",
+  "notice.removedDisabled": "该 Server 由上层配置提供，已改为禁用。",
+  "notice.enabled": "已启用。",
+  "notice.off": "已禁用。",
+  "notice.reset": "已重置为默认配置。",
+  "notice.resetNoop": "这项没有本地覆盖，无需重置。",
+  "notice.skillRegistered": "Runtime Skill 已注册；插件停止运行后失效。",
+  "notice.skillUnregistered": "Runtime Skill 已注销。",
+  "write.disabled": "当前 DSH 版本未验证，写入已禁用。",
+  "write.runtime": "DSH 版本：{version}",
+  "write.plugin": "插件版本：{version}",
+  "write.tested": "已回归版本：{versions}",
+  "write.missing": "缺少接口：{names}",
+  "form.create": "新增 MCP Server",
+  "form.edit": "编辑 MCP Server",
+  "form.name": "名称",
+  "form.nameHint": "字母、数字、下划线或连字符，1–32 位。创建后不可修改。",
+  "form.namePlaceholder": "例如 github",
+  "form.transport": "传输方式",
+  "form.stdio": "stdio（本地进程）",
+  "form.http": "streamable-http（远程）",
+  "form.command": "启动命令",
+  "form.commandHint": "例如 npx",
+  "form.args": "参数",
+  "form.argsHint": "每行一个参数。",
+  "form.cwd": "工作目录",
+  "form.cwdHint": "可选，留空表示 DSH 的工作目录。",
+  "form.url": "服务地址",
+  "form.urlHint": "以 http:// 或 https:// 开头。",
+  "form.env": "环境变量",
+  "form.headers": "请求头",
+  "form.credentialHint": "已有值不会显示；输入新值才会替换，留空保持不变。",
+  "form.credentialKey": "名称",
+  "form.credentialValue": "值",
+  "form.credentialSet": "已设置",
+  "form.credentialReplace": "新值",
+  "form.timeout": "调用超时（毫秒）",
+  "form.instructionBytes": "指令上限（字节）",
+  "form.failOnStartup": "启动失败时报错",
+  "form.failOnStartupHint": "关闭时连接失败不报错，只是这个 Server 没有工具。",
+  "form.reconnect": "自动重连",
+  "form.reconnectInitial": "首次延迟（毫秒）",
+  "form.reconnectMax": "最大延迟（毫秒）",
+  "form.reconnectAttempts": "最大尝试次数",
+  "form.expression": "这个字段是 YAML 表达式，页面不能修改：",
+  "form.commandRequired": "请填写启动命令。",
+  "form.urlRequired": "请填写服务地址。",
+  "form.invalidUrl": "服务地址必须以 http:// 或 https:// 开头。",
+  "form.invalidName": "名称只能包含字母、数字、下划线和连字符，长度 1–32。",
+  "form.invalidNumber": "{field} 必须是正整数。",
+  "form.credentialKeyRequired": "新增的凭据需要填写名称。",
+  "form.unchanged": "没有需要保存的修改。",
+  "skills.note": "Runtime Skill 只在插件运行期间有效，不会写入配置文件。",
+  "skills.incomplete": "Skill 目录尚未读取完整，结果可能缺项。",
+  "skills.empty": "当前 Profile 没有可见的 Skill。",
+  "skills.register": "注册 Runtime Skill",
+  "skills.name": "名称",
+  "skills.nameHint": "小写 kebab-case，例如 my-skill。",
+  "skills.description": "描述",
+  "skills.whenToUse": "何时使用",
+  "skills.whenToUseHint": "可选。",
+  "skills.content": "正文",
+  "skills.viewTitle": "正文：{name}",
+  "skills.contentEmpty": "（正文为空）",
+  "error.generic": "操作失败，请查看 DSH 日志。",
+  "error.badResponse": "Host 返回的数据格式不正确，请确认插件与 DSH 版本一致。",
+};
+
+const en = {
+  nav: "MCP & Skills",
+  "tabs.label": "Management type",
+  "tab.mcp": "MCP Servers",
+  "tab.skills": "Skills",
+  "action.add": "Add server",
+  "action.refresh": "Refresh",
+  "action.edit": "Edit",
+  "action.save": "Save",
+  "action.saving": "Saving…",
+  "action.cancel": "Cancel",
+  "action.remove": "Delete",
+  "action.confirmRemove": "Confirm delete",
+  "action.enable": "Enable",
+  "action.disable": "Disable",
+  "action.reset": "Reset to default",
+  "action.view": "View",
+  "action.close": "Close",
+  "action.unregister": "Unregister",
+  "action.confirmUnregister": "Confirm unregister",
+  "action.addCredential": "Add entry",
+  "action.removeCredential": "Remove",
+  "action.undoRemove": "Undo",
+  "action.advanced": "Advanced",
+  "state.loading": "Loading…",
+  "state.disabled": "Disabled",
+  "source.profile": "This profile",
+  "source.bundle": "Upper layer",
+  "source.bundleTitle": "Provided by a plugin bundle or an upper layer; disable it here, but it cannot be deleted.",
+  "mcp.empty": "No MCP server is configured yet.",
+  "mcp.emptyHint": "Use Add server in the top-right corner.",
+  "mcp.loadFailed": "This server failed to load. Check the command, the address, and the DSH log.",
+  "mcp.noTools": "Configured, but it returned no tools. Check the command or address, and the server log.",
+  "mcp.tools": "Tools ({count})",
+  "mcp.toolsUnavailable": "The tool catalog is unreadable, so tool counts are unknown.",
+  "mcp.ungrouped": "Unattributed MCP tools ({count})",
+  "mcp.duplicate": "Several servers share the same name: {names}. Their tools cannot be attributed.",
+  "mcp.enableFirst": "Enable it before editing.",
+  "mcp.notLoaded": "This entry is not loaded, so it cannot be edited.",
+  "mcp.footnote": "Changes are written to this profile's configuration; upper-layer entries can only be changed in the bundle that provides them.",
+  "notice.applied": "Saved and applied.",
+  "notice.appliedSuffix": "; it is active.",
+  "notice.restartSuffix": "; restart DSH for it to take effect.",
+  "notice.overriddenSuffix": ", but a higher-priority configuration overrides it.",
+  "notice.restart": "Saved. Restart DSH for it to take effect.",
+  "notice.overridden": "Saved, but a higher-priority configuration overrides it, so it is not active.",
+  "notice.removed": "Deleted.",
+  "notice.removedDisabled": "This server comes from an upper layer, so it was disabled instead.",
+  "notice.enabled": "Enabled.",
+  "notice.off": "Disabled.",
+  "notice.reset": "Reset to the default configuration.",
+  "notice.resetNoop": "This entry has no local override, so there is nothing to reset.",
+  "notice.skillRegistered": "Runtime skill registered; it disappears when the plugin stops.",
+  "notice.skillUnregistered": "Runtime skill unregistered.",
+  "write.disabled": "This DSH version is unverified; editing is disabled.",
+  "write.runtime": "DSH version: {version}",
+  "write.plugin": "Plugin version: {version}",
+  "write.tested": "Tested versions: {versions}",
+  "write.missing": "Missing interfaces: {names}",
+  "form.create": "Add MCP server",
+  "form.edit": "Edit MCP server",
+  "form.name": "Name",
+  "form.nameHint": "Letters, digits, underscores or hyphens, 1–32 characters. It cannot be changed later.",
+  "form.namePlaceholder": "e.g. github",
+  "form.transport": "Transport",
+  "form.stdio": "stdio (local process)",
+  "form.http": "streamable-http (remote)",
+  "form.command": "Command",
+  "form.commandHint": "e.g. npx",
+  "form.args": "Arguments",
+  "form.argsHint": "One argument per line.",
+  "form.cwd": "Working directory",
+  "form.cwdHint": "Optional; empty means the DSH working directory.",
+  "form.url": "Server URL",
+  "form.urlHint": "Must start with http:// or https://.",
+  "form.env": "Environment variables",
+  "form.headers": "Headers",
+  "form.credentialHint": "Stored values are never shown; type a new value to replace one, leave it blank to keep it.",
+  "form.credentialKey": "Key",
+  "form.credentialValue": "Value",
+  "form.credentialSet": "Set",
+  "form.credentialReplace": "New value",
+  "form.timeout": "Tool call timeout (ms)",
+  "form.instructionBytes": "Instruction limit (bytes)",
+  "form.failOnStartup": "Report startup failures",
+  "form.failOnStartupHint": "When off, a failed connection is silent and the server simply has no tools.",
+  "form.reconnect": "Reconnect automatically",
+  "form.reconnectInitial": "Initial delay (ms)",
+  "form.reconnectMax": "Maximum delay (ms)",
+  "form.reconnectAttempts": "Maximum attempts",
+  "form.expression": "This field is a YAML expression and cannot be changed here: ",
+  "form.commandRequired": "Enter a command.",
+  "form.urlRequired": "Enter a server URL.",
+  "form.invalidUrl": "The server URL must start with http:// or https://.",
+  "form.invalidName": "The name may only contain letters, digits, underscores and hyphens, 1–32 characters.",
+  "form.invalidNumber": "{field} must be a positive integer.",
+  "form.credentialKeyRequired": "A new credential needs a key.",
+  "form.unchanged": "Nothing to save.",
+  "skills.note": "Runtime skills live only while the plugin runs and are never written to the configuration.",
+  "skills.incomplete": "The skill catalog is incomplete; entries may be missing.",
+  "skills.empty": "No skill is visible in this profile.",
+  "skills.register": "Register runtime skill",
+  "skills.name": "Name",
+  "skills.nameHint": "Lowercase kebab-case, e.g. my-skill.",
+  "skills.description": "Description",
+  "skills.whenToUse": "When to use",
+  "skills.whenToUseHint": "Optional.",
+  "skills.content": "Content",
+  "skills.viewTitle": "Content: {name}",
+  "skills.contentEmpty": "(empty)",
+  "error.generic": "The operation failed; check the DSH log.",
+  "error.badResponse": "The Host returned an unexpected shape; check that the plugin and DSH versions match.",
+};
+
 const css = `
-.dsh-msm-page{display:flex;flex-direction:column;gap:16px;max-width:920px;color:var(--dsw-alias-label-primary,#1f2329);}
-.dsh-msm-page *{box-sizing:border-box;}
-.dsh-msm-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;}
-.dsh-msm-title{margin:0;font-size:22px;font-weight:600;}
-.dsh-msm-subtitle{margin:6px 0 0;color:var(--dsw-alias-label-secondary,#59636e);font-size:13px;line-height:1.5;}
-.dsh-msm-tabs{display:flex;gap:8px;border-bottom:1px solid var(--dsw-alias-border-l1,#d9dde3);}
-.dsh-msm-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#59636e);cursor:pointer;padding:9px 12px;font:inherit;}
-.dsh-msm-tab[aria-selected="true"]{border-bottom-color:var(--dsw-alias-brand-primary,#4677f5);color:var(--dsw-alias-label-primary,#1f2329);font-weight:600;}
-.dsh-msm-panel{display:flex;flex-direction:column;gap:14px;}
-.dsh-msm-row{display:flex;align-items:flex-end;gap:10px;}
-.dsh-msm-field{display:flex;flex:1;flex-direction:column;gap:5px;min-width:0;}
-.dsh-msm-label{color:var(--dsw-alias-label-primary,#1f2329);font-size:13px;font-weight:500;}
-.dsh-msm-hint,.dsh-msm-muted{color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.5;}
-.dsh-msm-input,.dsh-msm-select,.dsh-msm-textarea{width:100%;border:1px solid var(--dsw-alias-border-l2,#cfd5dd);border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#1f2329);padding:8px 10px;font:inherit;font-size:13px;}
-.dsh-msm-input:focus,.dsh-msm-select:focus,.dsh-msm-textarea:focus{outline:2px solid var(--dsw-alias-brand-primary,#4677f5);outline-offset:1px;}
-.dsh-msm-textarea{min-height:140px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.5;}
-.dsh-msm-textarea-short{min-height:72px;}
-.dsh-msm-button{border:1px solid var(--dsw-alias-border-l2,#cfd5dd);border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#1f2329);cursor:pointer;padding:8px 12px;font:inherit;font-size:13px;white-space:nowrap;}
-.dsh-msm-button:hover{border-color:var(--dsw-alias-brand-primary,#4677f5);}
-.dsh-msm-button-primary{border-color:var(--dsw-alias-brand-primary,#4677f5);background:var(--dsw-alias-brand-primary,#4677f5);color:#fff;}
-.dsh-msm-button-danger{color:var(--dsw-alias-state-error-primary,#d1242f);}
-.dsh-msm-button:disabled{cursor:not-allowed;opacity:.55;}
-.dsh-msm-card{display:flex;flex-direction:column;gap:10px;border:1px solid var(--dsw-alias-border-l1,#d9dde3);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#fff);padding:12px;}
-.dsh-msm-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;}
-.dsh-msm-card-title{margin:0;font-size:14px;font-weight:600;overflow-wrap:anywhere;}
-.dsh-msm-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
-.dsh-msm-pre{max-height:180px;overflow:auto;margin:0;border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:10px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;}
-.dsh-msm-list{display:flex;flex-direction:column;gap:9px;}
-.dsh-msm-notice{border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:9px 11px;color:var(--dsw-alias-label-secondary,#59636e);font-size:13px;line-height:1.5;}
-.dsh-msm-error{border:1px solid var(--dsw-alias-state-error-primary,#d1242f);color:var(--dsw-alias-state-error-primary,#d1242f);}
-.dsh-msm-success{color:var(--dsw-alias-state-success-primary,#18864b);}
-.dsh-msm-form{display:flex;flex-direction:column;gap:11px;border-top:1px solid var(--dsw-alias-border-l1,#d9dde3);padding-top:13px;}
-.dsh-msm-empty{padding:14px;border:1px dashed var(--dsw-alias-border-l2,#cfd5dd);border-radius:8px;color:var(--dsw-alias-label-secondary,#59636e);font-size:13px;}
-@media(max-width:680px){.dsh-msm-header,.dsh-msm-row{align-items:stretch;flex-direction:column}.dsh-msm-card-header{align-items:flex-start;flex-direction:column}}
+.dsh-msm{display:flex;flex-direction:column;gap:14px;color:var(--dsw-alias-label-primary,#1f2329);}
+.dsh-msm *{box-sizing:border-box;}
+.dsh-msm-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.dsh-msm-tabs{display:flex;gap:4px;}
+.dsh-msm-tab{border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#59636e);cursor:pointer;padding:6px 10px;font:inherit;font-size:13px;}
+.dsh-msm-tab[aria-selected="true"]{background:var(--dsw-alias-bg-layer-2,#f4f6f8);color:var(--dsw-alias-label-primary,#1f2329);font-weight:600;}
+.dsh-msm-count{color:var(--dsw-alias-label-tertiary,#8a929c);font-weight:400;margin-left:4px;}
+.dsh-msm-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.dsh-msm-btn{border:1px solid var(--dsw-alias-border-l2,#cfd5dd);border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#1f2329);cursor:pointer;padding:6px 10px;font:inherit;font-size:13px;white-space:nowrap;}
+.dsh-msm-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary,#4677f5);}
+.dsh-msm-btn:disabled{cursor:not-allowed;opacity:.5;}
+.dsh-msm-btn-primary{border-color:var(--dsw-alias-brand-primary,#4677f5);background:var(--dsw-alias-brand-primary,#4677f5);color:#fff;}
+.dsh-msm-btn-danger{color:var(--dsw-alias-state-error-primary,#d1242f);}
+.dsh-msm-link{border-color:transparent;background:transparent;color:var(--dsw-alias-label-secondary,#59636e);padding:2px 4px;}
+.dsh-msm-card{display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l1,#d9dde3);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#fff);padding:12px;}
+.dsh-msm-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.dsh-msm-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;}
+.dsh-msm-name{font-size:14px;font-weight:600;overflow-wrap:anywhere;}
+.dsh-msm-tag{border-radius:4px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);color:var(--dsw-alias-label-secondary,#59636e);padding:1px 6px;font-size:11px;font-weight:500;}
+.dsh-msm-tag-warn{background:transparent;border:1px solid var(--dsw-alias-border-l2,#cfd5dd);}
+.dsh-msm-summary{color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;overflow-wrap:anywhere;}
+.dsh-msm-muted{color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.5;overflow-wrap:anywhere;}
+.dsh-msm-note{border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:8px 10px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.5;}
+.dsh-msm-note-error{border:1px solid var(--dsw-alias-state-error-primary,#d1242f);color:var(--dsw-alias-state-error-primary,#d1242f);}
+.dsh-msm-note-ok{color:var(--dsw-alias-state-success-primary,#18864b);}
+.dsh-msm-list{display:flex;flex-direction:column;gap:8px;}
+.dsh-msm-empty{border:1px dashed var(--dsw-alias-border-l2,#cfd5dd);border-radius:8px;padding:14px;color:var(--dsw-alias-label-secondary,#59636e);font-size:13px;}
+.dsh-msm-tools{border-top:1px solid var(--dsw-alias-border-l1,#d9dde3);padding-top:6px;}
+.dsh-msm-tools summary{cursor:pointer;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;}
+.dsh-msm-tool-list{margin:6px 0 0;padding-left:18px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
+.dsh-msm-form{display:flex;flex-direction:column;gap:10px;}
+.dsh-msm-form-title{margin:0;font-size:15px;font-weight:600;}
+.dsh-msm-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.dsh-msm-label{font-size:12px;font-weight:500;}
+.dsh-msm-hint{color:var(--dsw-alias-label-secondary,#59636e);font-size:11px;line-height:1.45;}
+.dsh-msm-input{width:100%;border:1px solid var(--dsw-alias-border-l2,#cfd5dd);border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#1f2329);padding:6px 8px;font:inherit;font-size:13px;}
+.dsh-msm-input:focus{outline:2px solid var(--dsw-alias-brand-primary,#4677f5);outline-offset:1px;}
+.dsh-msm-textarea{min-height:64px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;}
+.dsh-msm-check{display:flex;align-items:center;gap:6px;font-size:13px;}
+.dsh-msm-cred{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dsh-msm-cred-key{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;min-width:96px;overflow-wrap:anywhere;}
+.dsh-msm-cred .dsh-msm-input{flex:1;min-width:120px;width:auto;}
+.dsh-msm-cred-removed .dsh-msm-cred-key{color:var(--dsw-alias-state-error-primary,#d1242f);text-decoration:line-through;}
+.dsh-msm-code{border-radius:4px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:1px 5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;overflow-wrap:anywhere;}
+.dsh-msm-pre{max-height:220px;overflow:auto;margin:0;border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:10px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;}
+.dsh-msm-details{display:flex;flex-direction:column;gap:4px;}
+.dsh-msm-details summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary,#59636e);}
+@media(max-width:680px){.dsh-msm-head{align-items:stretch;flex-direction:column}.dsh-msm-card-top{flex-direction:column}.dsh-msm-cred{flex-direction:column;align-items:stretch}}
 `;
 
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+function format(template, params) {
+  if (!params) return template;
+  return String(template).replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
 }
 
-function errorText(error) {
-  return error && typeof error.message === "string" ? error.message : "操作失败，请稍后重试。";
+/** Built-in copy, used until (or without) the locale service's `t` seat. */
+const fallbackT = (key, params) => format(zh[key] ?? key, params);
+
+function errorText(error, t) {
+  return error && typeof error.message === "string" && error.message ? error.message : t("error.generic");
 }
+
+const splitArgs = (text) => String(text).replace(/\r\n?/g, "\n").split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+
+/**
+ * A `!!js` field arrives as `{ expression }` from `describeConfig`, or as the raw `{ __jsExpr }`
+ * node when the field sits inside a nested object such as `reconnect`.
+ */
+const expressionOf = (value) => {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.expression === "string") return value.expression;
+  if (typeof value.__jsExpr === "string") return value.__jsExpr;
+  return undefined;
+};
 
 function createManagerPage(connection) {
-async function requestHost(method, args) {
-  const result = await connection.rpc.call("/api", "mcp-skill-manager." + method, args ?? {});
-  if (!isRecord(result) || typeof result.ok !== "boolean") {
-    throw new Error("Host RPC 返回格式无效，请检查插件与 DSH 的版本兼容性。");
-  }
-  if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
-  return result.value;
-}
-
-function Field(props) {
-  return h("label", { className: "dsh-msm-field" },
-    h("span", { className: "dsh-msm-label" }, props.label),
-    props.children,
-    props.hint ? h("span", { className: "dsh-msm-hint" }, props.hint) : null);
-}
-
-function ManagerPage() {
-  const sessionId = "";
-  const [writeCount, setWriteCount] = React.useState(0);
-  const compatibilityRequest = React.useRef(0);
-  const [compatibility, setCompatibility] = React.useState(null);
-  const [compatibilityBusy, setCompatibilityBusy] = React.useState(true);
-  const [compatibilityError, setCompatibilityError] = React.useState("");
-  const testedVersion = compatibility?.versionStatus === "tested" && compatibility.testedRuntimeVersions.includes(compatibility.runtimeVersion);
-  const canEditMcp = testedVersion && compatibility?.capabilities?.configEdit === true && compatibility?.writes?.mcp === true;
-  const canEditSkills = testedVersion && compatibility?.capabilities?.runtimeSkills === true && compatibility?.writes?.skills === true;
-  const [runtimeCatalog, setRuntimeCatalog] = React.useState(null);
-  const [runtimeBusy, setRuntimeBusy] = React.useState(true);
-  const [runtimeError, setRuntimeError] = React.useState("");
-  const [toolFilter, setToolFilter] = React.useState("");
-  const [nativeBusy, setNativeBusy] = React.useState(false);
-  const [nativeError, setNativeError] = React.useState("");
-  const [nativeNotice, setNativeNotice] = React.useState("");
-  /** Draft values per MCP entry, and which entries have their editor expanded. */
-  const [mcpDrafts, setMcpDrafts] = React.useState({});
-  const [mcpOpen, setMcpOpen] = React.useState({});
-  const canAddNative = canEditMcp && !nativeBusy && writeCount === 0;
-  const runtimeRequest = React.useRef(0);
-  const skillRequest = React.useRef(0);
-  const bodyRequest = React.useRef(0);
-  const catalogGeneration = React.useRef(0);
-  const [catalogRevision, setCatalogRevision] = React.useState(0);
-  const [tab, setTab] = React.useState("mcp");
-  const [skills, setSkills] = React.useState([]);
-  const [skillsBusy, setSkillsBusy] = React.useState(true);
-  const [skillsComplete, setSkillsComplete] = React.useState(true);
-  const [skillsError, setSkillsError] = React.useState("");
-  const [skillsNotice, setSkillsNotice] = React.useState("");
-  const [selectedSkill, setSelectedSkill] = React.useState(null);
-  const [unregisterName, setUnregisterName] = React.useState("");
-  const [skillFormOpen, setSkillFormOpen] = React.useState(false);
-  const [skillName, setSkillName] = React.useState("");
-  const [skillDescription, setSkillDescription] = React.useState("");
-  const [skillWhenToUse, setSkillWhenToUse] = React.useState("");
-  const [skillContent, setSkillContent] = React.useState("");
-  const hookRequest = React.useRef(0);
-  const hookWriteLock = React.useRef(false);
-  const [hooksCatalog, setHooksCatalog] = React.useState(null);
-  const [hooksBusy, setHooksBusy] = React.useState(false);
-  const [hooksError, setHooksError] = React.useState("");
-  const [hooksNotice, setHooksNotice] = React.useState("");
-  const [hookFormOpen, setHookFormOpen] = React.useState(false);
-  const [hookEditing, setHookEditing] = React.useState(null);
-  const [hookName, setHookName] = React.useState("");
-  const [hookEvent, setHookEvent] = React.useState("SessionStart");
-  const [hookMatcher, setHookMatcher] = React.useState("");
-  const [hookCommand, setHookCommand] = React.useState("");
-  const [hookTimeout, setHookTimeout] = React.useState("30");
-  const [hookConfirm, setHookConfirm] = React.useState(null);
-  const hookEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStart", "SubagentStop"];
-  const canEditHooks = compatibility?.runtimeVersion === "0.2.1-rc.2"
-    && compatibility?.writes?.hooks === true && hooksCatalog?.writable === true;
-  const hooksLocked = hooksBusy || hookWriteLock.current || writeCount > 0;
-  const hasMatcher = (event) => event !== "UserPromptSubmit" && event !== "Stop";
-
-  function callHost(method, args = {}) {
-    return requestHost(method, { ...args, sessionId });
+  async function requestHost(method, args) {
+    const result = await connection.rpc.call("/api", "mcp-skill-manager." + method, args ?? {});
+    if (!isRecord(result) || typeof result.ok !== "boolean") throw new Error("Host RPC 返回格式无效；请确认插件与 DSH 版本一致。");
+    if (result.ok !== true) throw new Error(result.error && result.error.message || "Host 操作失败。");
+    return result.value;
   }
 
-  function checkContext(result) {
-    if (result?.context?.sessionId !== sessionId) throw new Error("返回的会话上下文不匹配，请确认 Host 与 Client 使用同一插件版本。");
+  function Field(props) {
+    return h("label", { className: "dsh-msm-field" },
+      h("span", { className: "dsh-msm-label" }, props.label),
+      props.children,
+      props.hint ? h("span", { className: "dsh-msm-hint" }, props.hint) : null);
   }
 
-  async function refreshCompatibility() {
-    const requestId = ++compatibilityRequest.current;
-    setCompatibility(null);
-    setCompatibilityBusy(true);
-    setCompatibilityError("");
-    setSkillFormOpen(false);
-    setUnregisterName("");
-    try {
-      const result = await callHost("compatibility.status");
-      if (requestId !== compatibilityRequest.current) return;
-      if (!isRecord(result) || result.protocolVersion !== 1 || typeof result.pluginVersion !== "string"
-        || !(result.runtimeVersion === null || typeof result.runtimeVersion === "string")
-        || !["tested", "unverified", "unknown"].includes(result.versionStatus)
-        || !Array.isArray(result.testedRuntimeVersions) || !result.testedRuntimeVersions.every((version) => typeof version === "string")
-        || !isRecord(result.capabilities) || !Object.values(result.capabilities).every((value) => typeof value === "boolean")
-        || !isRecord(result.writes) || typeof result.writes.mcp !== "boolean" || typeof result.writes.skills !== "boolean"
-        || (result.writes.hooks !== undefined && typeof result.writes.hooks !== "boolean")
-        || (result.capabilities.hookCatalog !== undefined && typeof result.capabilities.hookCatalog !== "boolean")
-        || (result.capabilities.hookRuntime !== undefined && typeof result.capabilities.hookRuntime !== "boolean")) {
-        throw new Error("兼容检查协议不匹配，请确认 Host 与 Client 插件版本一致；写入已禁用。");
-      }
-      checkContext(result);
-      setCompatibility(result);
-    } catch (error) {
-      if (requestId === compatibilityRequest.current) setCompatibilityError(errorText(error));
-    } finally {
-      if (requestId === compatibilityRequest.current) setCompatibilityBusy(false);
-    }
-  }
-
-  async function refreshHooks(fromWrite = false) {
-    if ((!fromWrite && hookWriteLock.current) || (!fromWrite && writeCount > 0)) return;
-    const requestId = ++hookRequest.current;
-    setHooksBusy(true);
-    setHooksCatalog(null);
-    setHooksError("");
-    setHookConfirm(null);
-    if (!fromWrite) { setHookFormOpen(false); setHookEditing(null); }
-    try {
-      const result = await callHost("hooks.list");
-      if (requestId !== hookRequest.current) return;
-      const validRevision = (revision) => typeof revision === "string" && revision.trim().length > 0;
-      if (!isRecord(result) || typeof result.writable !== "boolean" || !Array.isArray(result.events)
-        || result.events.length !== hookEvents.length || result.events.some((event) => !hookEvents.includes(event))
-        || new Set(result.events).size !== hookEvents.length || !Array.isArray(result.rules)
-        || result.rules.some((rule) => !isRecord(rule) || typeof rule.name !== "string" || !rule.name
-          || !hookEvents.includes(rule.event) || typeof rule.enabled !== "boolean"
-          || typeof rule.commandConfigured !== "boolean" || !validRevision(rule.revision)
-          || !Number.isInteger(rule.timeoutSec) || rule.timeoutSec < 1 || rule.timeoutSec > 600
-          || (rule.matcher !== undefined && typeof rule.matcher !== "string")
-          || (rule.command !== undefined))
-        || !isRecord(result.runtime) || !["disabled", "loading", "active", "failed", "unavailable"].includes(result.runtime.phase)
-        || !Number.isSafeInteger(result.runtime.enabledCount) || result.runtime.enabledCount < 0
-        || (result.runtime.error !== undefined && typeof result.runtime.error !== "string")) {
-        throw new Error("Hook 目录返回格式无效，当前写入已禁用。");
-      }
-      if (result.context?.kind !== "profile" || result.context.sessionId !== "") throw new Error("Hook 目录上下文不匹配，当前写入已禁用。");
-      checkContext(result);
-      setHooksCatalog(result);
-      return true;
-    } catch (error) {
-      if (requestId === hookRequest.current) {
-        setHooksCatalog(null);
-        setHooksError(errorText(error));
-      }
-      return false;
-    } finally {
-      if (requestId === hookRequest.current) setHooksBusy(false);
-    }
-  }
-
-  function editHook(rule) {
-    if (!canEditHooks || hooksLocked) return;
-    setHookEditing(rule);
-    setHookName(rule.name);
-    setHookEvent(rule.event);
-    setHookMatcher(rule.matcher || "");
-    setHookTimeout(String(rule.timeoutSec));
-    setHookCommand("");
-    setHookConfirm(null);
-    setHooksError("");
-    setHookFormOpen(true);
-  }
-
-  function createHook() {
-    if (!canEditHooks || hooksLocked) return;
-    setHookEditing(null);
-    setHookName("");
-    setHookEvent("SessionStart");
-    setHookMatcher("");
-    setHookTimeout("30");
-    setHookCommand("");
-    setHookConfirm(null);
-    setHooksError("");
-    setHookFormOpen(true);
-  }
-
-  async function writeHook(method, args, notice) {
-    if (!canEditHooks || hooksLocked) {
-      setHooksError("Hook 目录正在刷新或写入权限不可用，请刷新后重试。");
-      return;
-    }
-    hookWriteLock.current = true;
-    setHooksBusy(true);
-    setHooksError("");
-    setHooksNotice("");
-    setWriteCount((count) => count + 1);
-    try {
-      const result = await callHost(method, args);
-      if (result?.saved === false) throw new Error("Hook 配置未保存，请刷新目录后重试。");
-      if (method !== "hooks.retry" && result?.saved !== true) throw new Error("Hook 写入结果不明确，请刷新目录核对后再操作。");
-      setHookFormOpen(false);
-      setHookConfirm(null);
-      const reloaded = await refreshHooks(true);
-      // The write is already durable, so a failed catalogue reload must not read as a failed save.
-      if (reloaded) setHooksNotice(notice);
-      else setHooksNotice(`${notice} 已持久化，但目录重新读取失败，运行状态未知；请点「刷新 Hooks」重试。`);
-    } catch (error) {
-      setHooksError(errorText(error));
-    } finally {
-      hookWriteLock.current = false;
-      setWriteCount((count) => count - 1);
-      setHooksBusy(false);
-    }
-  }
-
-  async function saveHook(event) {
-    event.preventDefault();
-    if (!canEditHooks || hooksLocked) return;
-    const timeoutSec = Number(hookTimeout);
-    if (!Number.isInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 600) {
-      setHooksError("超时时间必须是 1–600 的整数秒。");
-      return;
-    }
-    const command = hookCommand.trim();
-    if (!hookEditing && !command) {
-      setHooksError("新建规则必须填写命令。");
-      return;
-    }
-    const definition = { event: hookEvent, timeoutSec };
-    if (hasMatcher(hookEvent) && hookMatcher.trim()) definition.matcher = hookMatcher.trim();
-    if (command) definition.command = command;
-    await writeHook("hooks.upsert", { name: hookName.trim(), definition,
-      ...(hookEditing ? { expectedRevision: hookEditing.revision } : {}) },
-    hookEditing ? `Hook “${hookName.trim()}” 已保存；运行状态请查看下方状态。` : `Hook “${hookName.trim()}” 已保存为停用；需要手动启用。`);
-  }
-
-  async function changeHookEnabled(rule, enabled) {
-    await writeHook("hooks.set-enabled", { name: rule.name, enabled, expectedRevision: rule.revision },
-      enabled ? `Hook “${rule.name}” 已保存为启用；“已加载”表示桥接器加载，不代表命令已执行。`
-        : `Hook “${rule.name}” 已保存为停用。`);
-  }
-
-  async function removeHook(rule) {
-    await writeHook("hooks.remove", { name: rule.name, expectedRevision: rule.revision }, `Hook “${rule.name}” 已移除。`);
-  }
-
-  async function retryHooks() {
-    await writeHook("hooks.retry", {}, "已请求重新加载 Hooks；请查看最新运行状态。");
-  }
-
-  /** Draft of one MCP entry: Host-reported values as defaults, overlaid by what the page typed. */
-  function draftFor(row) {
-    const defaults = {
-      url: row.editable?.fields?.url ?? "",
-      command: row.editable?.fields?.command ?? "",
-      toolCallTimeoutMs: String(row.editable?.fields?.toolCallTimeoutMs ?? 120000),
-      failOnStartupError: row.failOnStartupError === true,
+  /** Every entry in the create form, before validation. */
+  function blankDraft() {
+    return {
+      serverName: "",
+      transport: "stdio",
+      command: "",
+      args: "",
+      cwd: "",
+      url: "",
+      timeout: "",
+      instructionBytes: "",
+      failOnStartup: false,
+      reconnectEnabled: true,
+      reconnectTouched: false,
+      reconnectInitial: "",
+      reconnectMax: "",
+      reconnectAttempts: "",
+      locked: {},
+      credentials: [],
+      advancedOpen: false,
+      reconnectLocked: {},
     };
-    return { ...defaults, ...(mcpDrafts[row.entryId] ?? {}) };
   }
 
-  function updateDraft(entryId, field, value) {
-    setMcpDrafts((drafts) => ({ ...drafts, [entryId]: { ...(drafts[entryId] ?? {}), [field]: value } }));
-  }
-
-  function toggleMcpEditor(entryId) {
-    setMcpOpen((open) => ({ ...open, [entryId]: !open[entryId] }));
-  }
-
-  /**
-   * Saves one MCP entry through the Host, which rewrites the Profile configuration and lets the
-   * Loader apply it. That save is what makes DSH rebuild the connection.
-   */
-  async function saveMcpEdit(event, row) {
-    event.preventDefault();
-    if (!canAddNative || row.inherited) return;
-    const draft = draftFor(row);
-    const patch = {
-      failOnStartupError: draft.failOnStartupError === true,
-      toolCallTimeoutMs: Number(draft.toolCallTimeoutMs),
+  /** The edit form, seeded from the Host's description of one live entry. */
+  function draftFor(server) {
+    const config = isRecord(server.config) ? server.config : {};
+    const fields = isRecord(config.fields) ? config.fields : {};
+    const locked = {};
+    const readText = (name) => {
+      const expression = expressionOf(fields[name]);
+      if (expression !== undefined) { locked[name] = expression; return ""; }
+      const value = fields[name];
+      if (value === undefined || value === null) return "";
+      return typeof value === "string" ? value : String(value);
     };
-    if (row.editable?.transport === "stdio") patch.command = draft.command;
-    else patch.url = draft.url;
-    setNativeBusy(true); setNativeError(""); setNativeNotice("");
-    setWriteCount((count) => count + 1);
-    try {
-      await callHost("mcp.update", { entryId: row.entryId, patch });
-      setNativeNotice("已保存，并交由 DSH 的配置加载路径重建该连接；请稍候刷新工具目录确认结果。");
-      setMcpOpen((open) => ({ ...open, [row.entryId]: false }));
-      await new Promise((done) => setTimeout(done, 800));
-      await refreshRuntime();
-    } catch (error) { setNativeError(errorText(error)); }
-    finally { setNativeBusy(false); setWriteCount((count) => count - 1); }
+    let args = "";
+    const argsExpression = expressionOf(fields.args);
+    if (argsExpression !== undefined) locked.args = argsExpression;
+    else if (Array.isArray(fields.args)) args = fields.args.filter((arg) => typeof arg === "string").join("\n");
+    const reconnect = isRecord(config.reconnect) ? config.reconnect : {};
+    const reconnectLocked = {};
+    const reconnectText = (name) => {
+      const expression = expressionOf(reconnect[name]);
+      if (expression !== undefined) { reconnectLocked[name] = expression; return ""; }
+      return typeof reconnect[name] === "number" ? String(reconnect[name]) : "";
+    };
+    if (isRecord(reconnect.enabled)) reconnectLocked.enabled = expressionOf(reconnect.enabled) ?? "…";
+    return {
+      ...blankDraft(),
+      serverName: config.serverName ?? server.serverName ?? "",
+      transport: config.transport === "stdio" ? "stdio" : "streamable-http",
+      command: readText("command"),
+      args,
+      cwd: readText("cwd"),
+      url: readText("url"),
+      timeout: readText("toolCallTimeoutMs"),
+      instructionBytes: readText("maxInstructionBytes"),
+      failOnStartup: fields.failOnStartupError === true,
+      reconnectEnabled: reconnect.enabled === undefined ? true : reconnect.enabled === true,
+      reconnectInitial: reconnectText("initialDelayMs"),
+      reconnectMax: reconnectText("maxDelayMs"),
+      reconnectAttempts: reconnectText("maxAttempts"),
+      locked,
+      reconnectLocked,
+      credentials: (Array.isArray(config.credentialKeys) ? config.credentialKeys : [])
+        .filter((key) => typeof key === "string")
+        .map((key) => ({ key, value: "", existing: true, remove: false })),
+    };
   }
 
-  async function refreshRuntime() {
-    const requestId = ++runtimeRequest.current;
-    setRuntimeBusy(true);
-    setRuntimeCatalog(null);
-    setRuntimeError("");
-    try {
-      const result = await callHost("mcp.discover");
-      if (requestId !== runtimeRequest.current) return;
-      if (!isRecord(result) || !Array.isArray(result.tools) || !Array.isArray(result.candidates) || !Array.isArray(result.configured)) throw new Error("MCP 配置及工具目录返回格式无效。");
-      checkContext(result);
-      setRuntimeCatalog(result);
-    } catch (error) {
-      if (requestId === runtimeRequest.current) setRuntimeError(errorText(error));
-    } finally {
-      if (requestId === runtimeRequest.current) setRuntimeBusy(false);
-    }
-  }
-
-  async function refreshSkills() {
-    const requestId = ++skillRequest.current;
-    const generation = ++catalogGeneration.current;
-    ++bodyRequest.current;
-    setSelectedSkill(null);
-    setCatalogRevision(generation);
-    setSkillsBusy(true);
-    setSkillsError("");
-    try {
-      const result = await callHost("skills.list", {});
-      if (requestId !== skillRequest.current) return;
-      if (!isRecord(result) || !Array.isArray(result.skills)) throw new Error("Skill 目录返回格式无效。");
-      checkContext(result);
-      if (catalogGeneration.current === generation) ++catalogGeneration.current;
-      ++bodyRequest.current;
-      setSelectedSkill(null);
-      setCatalogRevision(catalogGeneration.current);
-      setSkills(result.skills);
-      setSkillsComplete(result.complete !== false);
-    } catch (error) {
-      if (requestId === skillRequest.current) {
-        ++catalogGeneration.current;
-        setCatalogRevision(catalogGeneration.current);
-        // A failed read must not leave a stale catalogue that still offers body reads and unregistration.
-        setSkills([]);
-        setSkillsError(errorText(error));
+  /** Credential rows become a merge map: `null` deletes a stored key, a string replaces it. */
+  function credentialPatch(rows, t) {
+    const patch = {};
+    for (const row of rows) {
+      if (row.existing) {
+        if (row.remove) patch[row.key] = null;
+        else if (row.value !== "") patch[row.key] = row.value;
+        continue;
       }
-    } finally {
-      if (requestId === skillRequest.current) setSkillsBusy(false);
+      if (row.removed) continue;
+      const key = row.key.trim();
+      if (!key) {
+        if (row.value === "") continue;
+        throw new Error(t("form.credentialKeyRequired"));
+      }
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key)) throw new Error(t("form.credentialKeyRequired"));
+      patch[key] = row.value;
     }
+    return Object.keys(patch).length ? patch : undefined;
   }
 
-  async function loadSkill(name) {
-    if (skillsBusy || !skills.some((skill) => skill.name === name)) {
-      setSkillsError("Skill 目录正在刷新或已变化，请等待刷新完成后再读取正文。");
-      return;
-    }
-    const requestId = ++bodyRequest.current;
-    const generation = catalogGeneration.current;
-    const revision = catalogRevision;
-    setSelectedSkill(null);
-    setSkillsError("");
-    try {
-      const result = await callHost("skills.get", { name });
-      if (requestId !== bodyRequest.current || generation !== catalogGeneration.current || revision !== catalogRevision) return;
-      checkContext(result);
-      if (!skills.some((skill) => skill.name === name)) return;
-      setSelectedSkill(result && result.skill || null);
-    } catch (error) {
-      if (requestId === bodyRequest.current && generation === catalogGeneration.current) setSkillsError(errorText(error));
-    }
+  function positiveNumber(text, label, t) {
+    const trimmed = String(text).trim();
+    if (trimmed === "") return undefined;
+    const value = Number(trimmed);
+    if (!Number.isInteger(value) || value <= 0) throw new Error(t("form.invalidNumber", { field: label }));
+    return value;
   }
 
-  React.useEffect(() => {
-    if (tab === "hooks" && !hooksCatalog && !hooksBusy && !hooksError) void refreshHooks();
-  }, [tab]);
-
-  React.useEffect(() => {
-    void refreshCompatibility();
-    void refreshRuntime();
-    void refreshSkills();
-    return () => {
-      ++compatibilityRequest.current;
-      ++runtimeRequest.current;
-      ++skillRequest.current;
-      ++bodyRequest.current;
-      ++hookRequest.current;
-    };
-  }, []);
-
-  async function registerSkill(event) {
-    event.preventDefault();
-    if (!canEditSkills || skillsBusy) {
-      setSkillsError("当前兼容检查不允许写入，或 Skill 目录仍在读取。");
-      return;
+  function advancedPatch(draft, live, t) {
+    const patch = {};
+    const timeout = positiveNumber(draft.timeout, t("form.timeout"), t);
+    if (timeout !== undefined && timeout !== live.toolCallTimeoutMs) patch.toolCallTimeoutMs = timeout;
+    const bytes = positiveNumber(draft.instructionBytes, t("form.instructionBytes"), t);
+    if (bytes !== undefined && bytes !== live.maxInstructionBytes) patch.maxInstructionBytes = bytes;
+    if (!isRecord(live.failOnStartupError) && draft.failOnStartup !== (live.failOnStartupError === true)) {
+      patch.failOnStartupError = draft.failOnStartup;
     }
-    setSkillsError("");
-    setSkillsNotice("");
-    setWriteCount((count) => count + 1);
-    setSkillsBusy(true);
-    try {
+    return patch;
+  }
+
+  function reconnectPatch(draft, liveReconnect, t) {
+    const patch = {};
+    if (draft.reconnectTouched && draft.reconnectEnabled !== (liveReconnect.enabled === true)) {
+      patch.enabled = draft.reconnectEnabled;
+    }
+    const numbers = [
+      ["initialDelayMs", draft.reconnectInitial, t("form.reconnectInitial")],
+      ["maxDelayMs", draft.reconnectMax, t("form.reconnectMax")],
+      ["maxAttempts", draft.reconnectAttempts, t("form.reconnectAttempts")],
+    ];
+    for (const [key, text, label] of numbers) {
+      if (isRecord(liveReconnect[key])) continue;
+      const value = positiveNumber(text, label, t);
+      if (value !== undefined && value !== liveReconnect[key]) patch[key] = value;
+    }
+    return patch;
+  }
+
+  function createPayload(draft, t) {
+    const serverName = draft.serverName.trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(serverName)) throw new Error(t("form.invalidName"));
+    const payload = { serverName, transport: draft.transport };
+    if (draft.transport === "stdio") {
+      const command = draft.command.trim();
+      if (!command) throw new Error(t("form.commandRequired"));
+      payload.command = command;
+      const args = splitArgs(draft.args);
+      if (args.length) payload.args = args;
+      const cwd = draft.cwd.trim();
+      if (cwd) payload.cwd = cwd;
+    } else {
+      const url = draft.url.trim();
+      if (!url) throw new Error(t("form.urlRequired"));
+      if (!/^https?:\/\//.test(url)) throw new Error(t("form.invalidUrl"));
+      payload.url = url;
+    }
+    Object.assign(payload, advancedPatch(draft, {}, t));
+    const reconnect = reconnectPatch(draft, {}, t);
+    if (Object.keys(reconnect).length) payload.reconnect = reconnect;
+    const credentials = credentialPatch(draft.credentials, t);
+    if (credentials !== undefined) payload[draft.transport === "stdio" ? "env" : "headers"] = credentials;
+    return payload;
+  }
+
+  function updatePayload(draft, server, t) {
+    const config = isRecord(server.config) ? server.config : {};
+    const live = isRecord(config.fields) ? config.fields : {};
+    const liveReconnect = isRecord(config.reconnect) ? config.reconnect : {};
+    const patch = {};
+    if (draft.transport === "stdio") {
+      const command = draft.command.trim();
+      if (draft.locked.command === undefined && command !== (typeof live.command === "string" ? live.command : "")) {
+        if (!command) throw new Error(t("form.commandRequired"));
+        patch.command = command;
+      }
+      if (draft.locked.args === undefined) {
+        const args = splitArgs(draft.args);
+        const liveArgs = Array.isArray(live.args) ? live.args.filter((arg) => typeof arg === "string") : [];
+        if (args.join("\n") !== liveArgs.join("\n")) patch.args = args;
+      }
+      if (draft.locked.cwd === undefined) {
+        const cwd = draft.cwd.trim();
+        if (cwd !== (typeof live.cwd === "string" ? live.cwd : "")) patch.cwd = cwd;
+      }
+    } else if (draft.locked.url === undefined) {
+      const url = draft.url.trim();
+      if (url !== (typeof live.url === "string" ? live.url : "")) {
+        if (!url) throw new Error(t("form.urlRequired"));
+        if (!/^https?:\/\//.test(url)) throw new Error(t("form.invalidUrl"));
+        patch.url = url;
+      }
+    }
+    Object.assign(patch, advancedPatch(draft, live, t));
+    const reconnect = reconnectPatch(draft, liveReconnect, t);
+    if (Object.keys(reconnect).length) patch.reconnect = reconnect;
+    const credentials = credentialPatch(draft.credentials, t);
+    if (credentials !== undefined) patch[draft.transport === "stdio" ? "env" : "headers"] = credentials;
+    return Object.keys(patch).length ? patch : null;
+  }
+
+  function ManagerPage(props) {
+    const t = typeof props.t === "function" ? props.t : fallbackT;
+    const [tab, setTab] = React.useState("mcp");
+    const [status, setStatus] = React.useState(null);
+    const [servers, setServers] = React.useState(null);
+    const [toolsAvailable, setToolsAvailable] = React.useState(true);
+    const [ungrouped, setUngrouped] = React.useState([]);
+    const [duplicates, setDuplicates] = React.useState([]);
+    const [skills, setSkills] = React.useState(null);
+    const [skillsComplete, setSkillsComplete] = React.useState(true);
+    const [busy, setBusy] = React.useState("load");
+    const [error, setError] = React.useState("");
+    const [notice, setNotice] = React.useState("");
+    const [form, setForm] = React.useState(null);
+    const [draft, setDraft] = React.useState(null);
+    const [confirm, setConfirm] = React.useState(null);
+    const [skillView, setSkillView] = React.useState(null);
+    const [skillForm, setSkillForm] = React.useState(null);
+
+    /** One sequence for every read; a newer request or unmount discards older results. */
+    const sequence = React.useRef(0);
+    const locked = busy !== null;
+    const canWriteMcp = status?.writes?.mcp === true;
+    const canWriteSkills = status?.writes?.skills === true;
+
+    React.useEffect(() => {
+      void (async () => {
+        const id = ++sequence.current;
+        const settled = await Promise.allSettled([
+          requestHost("compatibility.status"),
+          requestHost("mcp.discover"),
+          requestHost("skills.list"),
+        ]);
+        if (id !== sequence.current) return;
+        const failures = [];
+        const [statusRead, mcpRead, skillRead] = settled;
+        const failure = (result) => result.status === "rejected" ? errorText(result.reason, t) : t("error.badResponse");
+        if (statusRead.status === "fulfilled" && isRecord(statusRead.value) && isRecord(statusRead.value.writes)) {
+          setStatus(statusRead.value);
+        } else {
+          setStatus(null);
+          failures.push(failure(statusRead));
+        }
+        if (mcpRead.status === "fulfilled" && isRecord(mcpRead.value) && Array.isArray(mcpRead.value.servers)) {
+          applyMcp(mcpRead.value);
+        } else {
+          setServers([]);
+          failures.push(failure(mcpRead));
+        }
+        if (skillRead.status === "fulfilled" && isRecord(skillRead.value) && Array.isArray(skillRead.value.skills)) {
+          setSkills(skillRead.value.skills);
+          setSkillsComplete(skillRead.value.complete !== false);
+        } else {
+          setSkills([]);
+          failures.push(failure(skillRead));
+        }
+        setError(failures.join(" "));
+        setBusy(null);
+      })();
+      return () => { sequence.current += 1; };
+    }, []);
+
+    function applyMcp(value) {
+      setServers(value.servers);
+      setToolsAvailable(value.toolsAvailable !== false);
+      setUngrouped(Array.isArray(value.ungrouped) ? value.ungrouped : []);
+      setDuplicates(Array.isArray(value.duplicateServerNames) ? value.duplicateServerNames : []);
+    }
+
+    async function reloadMcp() {
+      const id = ++sequence.current;
+      const value = await requestHost("mcp.discover");
+      if (id !== sequence.current) return;
+      if (!isRecord(value) || !Array.isArray(value.servers)) throw new Error(t("error.badResponse"));
+      applyMcp(value);
+    }
+
+    async function reloadSkills() {
+      const id = ++sequence.current;
+      const value = await requestHost("skills.list");
+      if (id !== sequence.current) return;
+      if (!isRecord(value) || !Array.isArray(value.skills)) throw new Error(t("error.badResponse"));
+      setSkills(value.skills);
+      setSkillsComplete(value.complete !== false);
+    }
+
+    async function run(kind, action) {
+      if (locked) return;
+      setBusy(kind);
+      setError("");
+      setNotice("");
+      try {
+        await action();
+      } catch (thrown) {
+        setError(errorText(thrown, t));
+      } finally {
+        setBusy(null);
+      }
+    }
+
+    /** One short sentence for a write's outcome; `head` names what happened. */
+    function outcomeText(head, value) {
+      const application = value?.application;
+      if (application === "restart-required") return `${head}${t("notice.restartSuffix")}`;
+      if (application === "overridden") return `${head}${t("notice.overriddenSuffix")}`;
+      return `${head}${t("notice.appliedSuffix")}`;
+    }
+
+    function refresh() {
+      void run("refresh", async () => {
+        const id = ++sequence.current;
+        const settled = await Promise.allSettled([requestHost("mcp.discover"), requestHost("skills.list")]);
+        if (id !== sequence.current) return;
+        const problems = [];
+        const [mcpRead, skillRead] = settled;
+        if (mcpRead.status === "fulfilled" && isRecord(mcpRead.value) && Array.isArray(mcpRead.value.servers)) applyMcp(mcpRead.value);
+        else problems.push(mcpRead.status === "rejected" ? errorText(mcpRead.reason, t) : t("error.badResponse"));
+        if (skillRead.status === "fulfilled" && isRecord(skillRead.value) && Array.isArray(skillRead.value.skills)) {
+          setSkills(skillRead.value.skills);
+          setSkillsComplete(skillRead.value.complete !== false);
+        } else {
+          problems.push(skillRead.status === "rejected" ? errorText(skillRead.reason, t) : t("error.badResponse"));
+        }
+        if (problems.length) throw new Error(problems.join(" "));
+      });
+    }
+
+    function openCreate() {
+      if (locked || !canWriteMcp) return;
+      setForm({ mode: "create" });
+      setDraft(blankDraft());
+      setConfirm(null);
+      setError("");
+      setNotice("");
+    }
+
+    function openEdit(server) {
+      if (locked || !canWriteMcp || !server.editable) return;
+      setForm({ mode: "edit", entryId: server.entryId });
+      setDraft(draftFor(server));
+      setConfirm(null);
+      setError("");
+      setNotice("");
+    }
+
+    function closeForm() {
+      setForm(null);
+      setDraft(null);
+    }
+
+    const set = (key, value) => setDraft((current) => current === null ? current : { ...current, [key]: value });
+
+    function setCredential(index, key, value) {
+      setDraft((current) => {
+        if (current === null) return current;
+        return { ...current, credentials: current.credentials.map((row, at) => at === index ? { ...row, [key]: value } : row) };
+      });
+    }
+
+    function removeCredential(index) {
+      setDraft((current) => {
+        if (current === null) return current;
+        const row = current.credentials[index];
+        if (!row) return current;
+        if (!row.existing) return { ...current, credentials: current.credentials.filter((_, at) => at !== index) };
+        return {
+          ...current,
+          credentials: current.credentials.map((item, at) => at === index ? { ...item, remove: !item.remove, value: "" } : item),
+        };
+      });
+    }
+
+    function submitForm(event) {
+      event.preventDefault();
+      if (locked || form === null || draft === null || !canWriteMcp) return;
+      const server = form.mode === "edit" ? (servers ?? []).find((row) => row.entryId === form.entryId) : undefined;
+      if (form.mode === "edit" && server === undefined) {
+        setError(t("error.badResponse"));
+        return;
+      }
+      let payload;
+      try {
+        payload = form.mode === "create" ? createPayload(draft, t) : updatePayload(draft, server, t);
+      } catch (thrown) {
+        setError(errorText(thrown, t));
+        return;
+      }
+      if (payload === null) {
+        setNotice(t("form.unchanged"));
+        closeForm();
+        return;
+      }
+      void run("save", async () => {
+        const value = form.mode === "create"
+          ? await requestHost("mcp.create", payload)
+          : await requestHost("mcp.update", { entryId: form.entryId, patch: payload });
+        closeForm();
+        await reloadMcp();
+        setNotice(value?.application === "restart-required" ? t("notice.restart")
+          : value?.application === "overridden" ? t("notice.overridden")
+            : t("notice.applied"));
+      });
+    }
+
+    function resetEntry() {
+      if (locked || form === null || form.mode !== "edit" || !canWriteMcp) return;
+      const entryId = form.entryId;
+      void run("save", async () => {
+        const value = await requestHost("mcp.reset", { entryId });
+        if (value?.changed === false) {
+          setNotice(t("notice.resetNoop"));
+          return;
+        }
+        closeForm();
+        await reloadMcp();
+        setNotice(outcomeText(t("notice.reset"), value));
+      });
+    }
+
+    function toggleServer(server) {
+      if (locked || !canWriteMcp) return;
+      void run("toggle:" + server.entryId, async () => {
+        const value = await requestHost("mcp.set-enabled", { entryId: server.entryId, enabled: server.disabled === true });
+        await reloadMcp();
+        setNotice(outcomeText(t(server.disabled ? "notice.enabled" : "notice.off"), value));
+      });
+    }
+
+    function removeServer(server) {
+      if (locked || !canWriteMcp) return;
+      void run("remove:" + server.entryId, async () => {
+        const value = await requestHost("mcp.remove", { entryId: server.entryId });
+        setConfirm(null);
+        if (form !== null && form.entryId === server.entryId) closeForm();
+        await reloadMcp();
+        const head = value?.removed === "disabled" ? t("notice.removedDisabled") : t("notice.removed");
+        setNotice(outcomeText(head, value));
+      });
+    }
+
+    function openSkillForm() {
+      if (locked || !canWriteSkills) return;
+      setSkillForm({ name: "", description: "", whenToUse: "", content: "" });
+      setError("");
+      setNotice("");
+    }
+
+    function submitSkill(event) {
+      event.preventDefault();
+      if (locked || skillForm === null || !canWriteSkills) return;
       const args = {
-        name: skillName.trim(),
-        description: skillDescription.trim(),
-        content: skillContent,
+        name: skillForm.name.trim(),
+        description: skillForm.description.trim(),
+        content: skillForm.content,
       };
-      if (skillWhenToUse.trim()) args.whenToUse = skillWhenToUse.trim();
-      await callHost("skills.register", args);
-      setSkillsNotice("Runtime Skill 已注册；插件结束运行后会注销。");
-      setSkillFormOpen(false);
-      setSkillName("");
-      setSkillDescription("");
-      setSkillWhenToUse("");
-      setSkillContent("");
-      await refreshSkills();
-    } catch (error) {
-      setSkillsError(errorText(error));
-    } finally {
-      setSkillsBusy(false);
-      setWriteCount((count) => count - 1);
+      if (skillForm.whenToUse.trim()) args.whenToUse = skillForm.whenToUse.trim();
+      void run("skill-save", async () => {
+        await requestHost("skills.register", args);
+        setSkillForm(null);
+        await reloadSkills();
+        setNotice(t("notice.skillRegistered"));
+      });
     }
-  }
 
-  async function unregisterSkill(name) {
-    if (!canEditSkills || skillsBusy) {
-      setSkillsError("当前兼容检查不允许写入，或 Skill 目录仍在读取。");
-      return;
+    function viewSkill(name) {
+      if (locked) return;
+      void run("skill-view:" + name, async () => {
+        const value = await requestHost("skills.get", { name });
+        setSkillView({ name, content: value?.skill?.content ?? "" });
+      });
     }
-    setSkillsError("");
-    setSkillsNotice("");
-    setWriteCount((count) => count + 1);
-    setSkillsBusy(true);
-    try {
-      await callHost("skills.unregister", { name });
-      setSkillsNotice(`Runtime Skill “${name}” 已注销。`);
-      setUnregisterName("");
-      if (selectedSkill && selectedSkill.name === name) setSelectedSkill(null);
-      await refreshSkills();
-    } catch (error) {
-      setSkillsError(errorText(error));
-    } finally {
-      setSkillsBusy(false);
-      setWriteCount((count) => count - 1);
-    }
-  }
 
-  function renderMcp() {
-    const filter = toolFilter.trim().toLowerCase();
-    const matches = (tool) => !filter || tool.name.toLowerCase().includes(filter);
-    const candidates = (runtimeCatalog?.candidates || []).filter(matches);
-    const origin = (tool) => tool.definitionView === "profile" ? "Profile 有效定义"
-      : tool.definitionView === "same-as-profile" ? "与 Profile 相同定义"
-      : "定义来源未知";
-    const configured = runtimeCatalog?.configured || [];
-    const serverNameCounts = new Map();
-    for (const row of configured) {
-      if (typeof row.serverName !== "string" || !row.serverName) continue;
-      serverNameCounts.set(row.serverName, (serverNameCounts.get(row.serverName) || 0) + 1);
+    function unregisterSkill(name) {
+      if (locked || !canWriteSkills) return;
+      void run("skill-remove:" + name, async () => {
+        await requestHost("skills.unregister", { name });
+        setConfirm(null);
+        if (skillView?.name === name) setSkillView(null);
+        await reloadSkills();
+        setNotice(t("notice.skillUnregistered"));
+      });
     }
-    const uniqueServerRows = [...serverNameCounts.entries()]
-      .filter(([, count]) => count === 1)
-      .map(([serverName]) => ({ serverName, row: configured.find((item) => item.serverName === serverName) }));
-    const toolsByServer = new Map(uniqueServerRows.map(({ serverName }) => [serverName, []]));
-    for (const tool of candidates) {
-      const matchingNames = [...serverNameCounts.keys()].filter((serverName) => tool.name.startsWith("mcp__" + serverName + "__"));
-      if (matchingNames.length === 1 && serverNameCounts.get(matchingNames[0]) === 1) {
-        toolsByServer.get(matchingNames[0]).push(tool);
-      }
-    }
-    const allServers = uniqueServerRows.map(({ serverName, row }) => ({ serverName, row, tools: toolsByServer.get(serverName) }));
-    const servers = allServers.filter(({ serverName, tools }) => !filter || serverName.toLowerCase().includes(filter) || tools.length);
-    const associated = new Set(allServers.flatMap(({ tools }) => tools.map((tool) => tool.name)));
-    const unassociatedCandidates = candidates.filter((tool) => !associated.has(tool.name));
-    const unresolvedRows = configured.filter((row) => !row.serverName || serverNameCounts.get(row.serverName) !== 1)
-      .filter((row) => !filter || String(row.serverName || row.entryId || "").toLowerCase().includes(filter));
-    const sourceLabel = (row) => row.kind === "preset-config" ? "来源：预设 " + (row.preset || "未知") : "来源：Profile 配置";
-    /** Editor for one MCP entry; only fields the Host reports as editable are offered. */
-    const renderEditor = (row) => {
-      const editable = row.editable;
-      if (!editable) return null;
-      const draft = draftFor(row);
-      const suffix = " " + (row.serverName || row.entryId);
-      return h("form", { className: "dsh-msm-card", "aria-label": "编辑 MCP " + (row.serverName || row.entryId), onSubmit: (event) => void saveMcpEdit(event, row) },
-        editable.transport === "stdio"
-          ? h(Field, { label: "启动命令", hint: "保存后用 DSH 的配置加载路径重建该连接。" },
-            h("input", { className: "dsh-msm-input", "aria-label": "MCP 启动命令" + suffix, value: draft.command, onChange: (event) => updateDraft(row.entryId, "command", event.currentTarget.value) }))
-          : h(Field, { label: "HTTP 地址", hint: "保存后用 DSH 的配置加载路径重建该连接。" },
-            h("input", { className: "dsh-msm-input", "aria-label": "MCP HTTP 地址" + suffix, value: draft.url, onChange: (event) => updateDraft(row.entryId, "url", event.currentTarget.value) })),
-        h(Field, { label: "调用超时（毫秒）" },
-          h("input", { className: "dsh-msm-input", "aria-label": "MCP 调用超时" + suffix, value: draft.toolCallTimeoutMs, onChange: (event) => updateDraft(row.entryId, "toolCallTimeoutMs", event.currentTarget.value) })),
-        h(Field, { label: "启动失败时报错", hint: "关闭时连接失败也不会报错，条目会保留但没有任何工具。" },
-          h("input", { type: "checkbox", "aria-label": "MCP 启动失败时报错" + suffix, checked: draft.failOnStartupError, onChange: (event) => updateDraft(row.entryId, "failOnStartupError", event.currentTarget.checked) })),
-        editable.envKeys?.length ? h("div", { className: "dsh-msm-muted" }, "凭据键（只显示名称）：" + editable.envKeys.join("、")) : null,
-        editable.headerKeys?.length ? h("div", { className: "dsh-msm-muted" }, "请求头键（只显示名称）：" + editable.headerKeys.join("、")) : null,
-        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: !canAddNative }, nativeBusy ? "保存中…" : "保存并重建连接"));
-    };
-    const renderConfig = (row) => h(React.Fragment, null,
-      h("div", { className: "dsh-msm-muted" }, sourceLabel(row)),
-      row.fiberState === 3 ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, "该条目的 MCP 客户端加载失败；请检查命令、地址和官方 MCP 桥接器。") : null,
-      row.serverName && serverNameCounts.get(row.serverName) === 1 && toolsByServer.get(row.serverName)?.length === 0 && runtimeCatalog?.toolsAvailable
-        ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, "此 Server 已配置但没有任何工具：连接失败、工具拉取失败，或该 Server 本身不提供工具。DSH 不会为此报错；可在下方编辑配置并保存以重建连接。") : null,
-      row.inherited
-        ? h("div", { className: "dsh-msm-muted" }, "该条目定义来自继承层，此处只读。")
-        : row.editable && row.entryId
-          ? h("button", { className: "dsh-msm-button", type: "button", disabled: !canAddNative, onClick: () => toggleMcpEditor(row.entryId) }, mcpOpen[row.entryId] ? "取消编辑" : "编辑此 MCP")
-          : null,
-      mcpOpen[row.entryId] ? renderEditor(row) : null,
-      h("div", { className: "dsh-msm-muted" }, "插件状态：" + (["等待", "加载中", "已激活", "失败", "已卸载", "卸载中"][row.fiberState] || "未知") + " · 连接状态：未知"));
-    return h("section", { className: "dsh-msm-panel" },
-      h("div", { className: "dsh-msm-row" },
-        h(Field, { label: "搜索 MCP 工具与 Server", hint: "按完整工具名或 Server 名称检索。" },
-          h("input", { className: "dsh-msm-input", "aria-label": "搜索 MCP 工具与 Server", value: toolFilter, onChange: (event) => setToolFilter(event.currentTarget.value) })),
-        h("button", { className: "dsh-msm-button", type: "button", disabled: runtimeBusy, onClick: () => void refreshRuntime() }, runtimeBusy ? "发现中…" : "刷新 MCP 发现")),
-      nativeError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, nativeError) : null,
-      nativeNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, nativeNotice) : null,
-      h("div", { className: "dsh-msm-muted" }, "按 Profile 范围读取 MCP 配置和工具目录。MCP 命名候选保留完整工具名；命名约定不能证明来源，工具可见也不代表连接在线。当前运行时未提供权威连接状态，页面显示为未知。"),
-      runtimeError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, runtimeError) : null,
-      runtimeBusy ? h("div", { className: "dsh-msm-muted" }, "正在读取 MCP 目录…") : null,
-      runtimeCatalog ? h(React.Fragment, null,
-        (runtimeCatalog.warnings || []).map((warning) => h("div", { className: "dsh-msm-notice", role: "status", key: warning }, warning)),
-        h("h3", { className: "dsh-msm-card-title" }, "MCP Server（" + servers.length + "）"),
-        servers.length ? h("div", { className: "dsh-msm-list" }, servers.map(({ serverName, row, tools }) => h("details", { className: "dsh-msm-card", key: serverName },
-          h("summary", null, serverName + "（" + tools.length + " 个候选工具）"),
-          renderConfig(row),
-          tools.length ? h("div", { className: "dsh-msm-list" }, tools.map((tool) => h("div", { className: "dsh-msm-card", key: tool.name }, tool.name + " · " + origin(tool))))
-            : h("div", { className: "dsh-msm-muted" }, "此 Server 当前没有名称可匹配的工具候选。"))))
-          : h("div", { className: "dsh-msm-muted" }, runtimeCatalog.toolsAvailable ? "没有带唯一 Server 名称的 MCP 配置。" : "工具目录不可用，不能据此判断 MCP 数量。"),
-        unassociatedCandidates.length || unresolvedRows.length ? h("details", { open: !!filter },
-          h("summary", null, "未关联 Server（" + unassociatedCandidates.length + " 个工具 · " + unresolvedRows.length + " 条配置）"),
-          unresolvedRows.map((row, index) => h("article", { className: "dsh-msm-card", key: "unresolved:" + (row.entryId || row.serverName || index) },
-            h("h3", { className: "dsh-msm-card-title" }, row.serverName || row.entryId || "MCP 配置条目"), renderConfig(row))),
-          unassociatedCandidates.length ? h("div", { className: "dsh-msm-list" }, unassociatedCandidates.map((tool) => h("div", { className: "dsh-msm-card", key: tool.name }, tool.name + " · " + origin(tool)))) : null) : null
-      ) : null);
-  }
 
-  function renderSkills() {
-    return h("section", { className: "dsh-msm-panel" },
-      h("div", { className: "dsh-msm-actions" },
-        h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void refreshSkills() }, skillsBusy ? "读取中…" : "刷新 Skills"),
-        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: skillsBusy || !canEditSkills, onClick: () => { setSkillFormOpen((open) => !open); } }, skillFormOpen ? "关闭表单" : "注册 Runtime Skill")),
-      h("div", { className: "dsh-msm-muted" }, "此页为 Profile 全局 Skill 目录。Runtime Skill 仅在插件生命周期内有效。"),
-      !skillsBusy && !skillsError ? h("div", { className: "dsh-msm-muted", "data-catalog-revision": String(catalogRevision) }, "当前目录与已读取正文属于同一次读取结果。") : null,
-      !skillsBusy && !skillsComplete && !skillsError ? h("div", { className: "dsh-msm-notice", role: "status" }, "Skill 发现尚未完成，当前结果不能作为完整目录。") : null,
-      skillsError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, skillsError) : null,
-      skillsNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, skillsNotice) : null,
-      skillFormOpen ? h("form", { className: "dsh-msm-form", onSubmit: registerSkill },
-        h(Field, { label: "名称", hint: "使用小写 kebab-case，例如 my-skill。" },
-          h("input", { className: "dsh-msm-input", value: skillName, onChange: (event) => setSkillName(event.currentTarget.value), required: true })),
-        h(Field, { label: "描述" },
-          h("input", { className: "dsh-msm-input", value: skillDescription, onChange: (event) => setSkillDescription(event.currentTarget.value), required: true })),
-        h(Field, { label: "何时使用（可选）" },
-          h("input", { className: "dsh-msm-input", value: skillWhenToUse, onChange: (event) => setSkillWhenToUse(event.currentTarget.value) })),
-        h(Field, { label: "Skill 正文" },
-          h("textarea", { className: "dsh-msm-textarea", value: skillContent, onChange: (event) => setSkillContent(event.currentTarget.value), required: true, spellCheck: false })),
-        h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: skillsBusy || !canEditSkills }, skillsBusy ? "注册中…" : "注册 Skill")))
+    function statusNotice() {
+      if (status === null) return null;
+      if (canWriteMcp && canWriteSkills) return null;
+      const missing = Object.entries(status.capabilities ?? {})
+        .filter(([, available]) => available !== true)
+        .map(([name]) => name);
+      return h("details", { className: "dsh-msm-note dsh-msm-details" },
+        h("summary", null, t("write.disabled")),
+        h("div", { className: "dsh-msm-muted" }, t("write.runtime", { version: status.runtimeVersion ?? "?" })),
+        h("div", { className: "dsh-msm-muted" }, t("write.plugin", { version: status.pluginVersion ?? "?" })),
+        h("div", { className: "dsh-msm-muted" }, t("write.tested", { versions: (status.testedRuntimeVersions ?? []).join(", ") || "—" })),
+        missing.length ? h("div", { className: "dsh-msm-muted" }, t("write.missing", { names: missing.join(", ") })) : null,
+        status.reason ? h("div", { className: "dsh-msm-muted" }, status.reason) : null);
+    }
+
+    function renderTab(id, label, count) {
+      return h("button", {
+        className: "dsh-msm-tab",
+        type: "button",
+        role: "tab",
+        "aria-selected": tab === id,
+        onClick: () => setTab(id),
+      }, label, h("span", { className: "dsh-msm-count" }, String(count)));
+    }
+
+    function renderServer(server) {
+      const name = server.serverName || server.entryId;
+      const count = Number.isFinite(server.toolCount) ? server.toolCount : 0;
+      const editTitle = !server.editable ? (server.disabled ? t("mcp.enableFirst") : t("mcp.notLoaded")) : undefined;
+      const removing = confirm?.kind === "remove" && confirm.id === server.entryId;
+      return h("article", { className: "dsh-msm-card", key: server.entryId },
+        h("div", { className: "dsh-msm-card-top" },
+          h("div", { className: "dsh-msm-title" },
+            h("span", { className: "dsh-msm-name" }, name),
+            h("span", { className: "dsh-msm-tag" }, server.transport),
+            h("span", {
+              className: "dsh-msm-tag",
+              title: server.source === "profile" ? undefined : t("source.bundleTitle"),
+            }, server.source === "profile" ? t("source.profile") : t("source.bundle")),
+            server.disabled ? h("span", { className: "dsh-msm-tag dsh-msm-tag-warn" }, t("state.disabled")) : null),
+          h("div", { className: "dsh-msm-actions" },
+            h("button", {
+              className: "dsh-msm-btn",
+              type: "button",
+              title: editTitle,
+              disabled: locked || !canWriteMcp || !server.editable,
+              onClick: () => openEdit(server),
+            }, t("action.edit")),
+            h("button", {
+              className: "dsh-msm-btn",
+              type: "button",
+              disabled: locked || !canWriteMcp,
+              onClick: () => toggleServer(server),
+            }, server.disabled ? t("action.enable") : t("action.disable")),
+            server.removable
+              ? removing
+                ? h(React.Fragment, null,
+                  h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteMcp, onClick: () => removeServer(server) }, t("action.confirmRemove")),
+                  h("button", { className: "dsh-msm-btn", type: "button", onClick: () => setConfirm(null) }, t("action.cancel")))
+                : h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteMcp, onClick: () => setConfirm({ kind: "remove", id: server.entryId }) }, t("action.remove"))
+              : null)),
+        h("div", { className: "dsh-msm-summary" }, server.summary),
+        server.loadFailed ? h("div", { className: "dsh-msm-note dsh-msm-note-error", role: "alert" }, t("mcp.loadFailed")) : null,
+        server.empty ? h("div", { className: "dsh-msm-note" }, t("mcp.noTools")) : null,
+        h("details", { className: "dsh-msm-tools" },
+          h("summary", null, t("mcp.tools", { count })),
+          Array.isArray(server.tools) && server.tools.length
+            ? h("ul", { className: "dsh-msm-tool-list" }, server.tools.map((tool) => h("li", { key: tool }, tool)))
+            : h("div", { className: "dsh-msm-muted" }, server.disabled ? t("state.disabled") : t("mcp.noTools"))));
+    }
+
+    function renderCredential(row, index) {
+      const removed = row.remove === true;
+      return h("div", { className: "dsh-msm-cred" + (removed ? " dsh-msm-cred-removed" : ""), key: row.existing ? row.key : "new:" + index },
+        row.existing
+          ? h(React.Fragment, null,
+            h("span", { className: "dsh-msm-cred-key" }, row.key),
+            h("span", { className: "dsh-msm-tag" }, t("form.credentialSet")),
+            h("input", {
+              className: "dsh-msm-input",
+              "aria-label": t("form.credentialReplace") + " " + row.key,
+              placeholder: t("form.credentialReplace"),
+              value: row.value,
+              disabled: locked || removed,
+              onChange: (event) => setCredential(index, "value", event.currentTarget.value),
+            }))
+          : h(React.Fragment, null,
+            h("input", {
+              className: "dsh-msm-input",
+              "aria-label": t("form.credentialKey") + " " + index,
+              placeholder: t("form.credentialKey"),
+              value: row.key,
+              disabled: locked,
+              onChange: (event) => setCredential(index, "key", event.currentTarget.value),
+            }),
+            h("input", {
+              className: "dsh-msm-input",
+              "aria-label": t("form.credentialValue") + " " + index,
+              placeholder: t("form.credentialValue"),
+              value: row.value,
+              disabled: locked,
+              onChange: (event) => setCredential(index, "value", event.currentTarget.value),
+            })),
+        h("button", {
+          className: "dsh-msm-btn dsh-msm-btn-danger",
+          type: "button",
+          disabled: locked,
+          onClick: () => removeCredential(index),
+        }, row.existing && row.remove ? t("action.undoRemove") : t("action.removeCredential")));
+    }
+
+    function renderForm() {
+      const creating = form.mode === "create";
+      const server = creating ? undefined : (servers ?? []).find((row) => row.entryId === form.entryId);
+      if (!creating && server === undefined) return null;
+      const transport = draft.transport;
+      const expressionNote = (field) => draft.locked[field] === undefined ? null
+        : h("div", { className: "dsh-msm-muted" }, t("form.expression"), h("code", { className: "dsh-msm-code" }, draft.locked[field]));
+      const credentialLabel = transport === "stdio" ? t("form.env") : t("form.headers");
+      return h("form", {
+        className: "dsh-msm-card dsh-msm-form",
+        "aria-label": creating ? t("form.create") : t("form.edit"),
+        onSubmit: submitForm,
+      },
+      h("h2", { className: "dsh-msm-form-title" }, creating ? t("form.create") : t("form.edit")),
+      creating
+        ? h(Field, { label: t("form.name"), hint: t("form.nameHint") },
+          h("input", {
+            className: "dsh-msm-input",
+            "aria-label": t("form.name"),
+            placeholder: t("form.namePlaceholder"),
+            value: draft.serverName,
+            disabled: locked,
+            onChange: (event) => set("serverName", event.currentTarget.value),
+          }))
+        : h("div", { className: "dsh-msm-muted" }, server.serverName || server.entryId),
+      creating
+        ? h(Field, { label: t("form.transport") },
+          h("select", {
+            className: "dsh-msm-input",
+            "aria-label": t("form.transport"),
+            value: draft.transport,
+            disabled: locked,
+            onChange: (event) => set("transport", event.currentTarget.value),
+          },
+          h("option", { value: "stdio" }, t("form.stdio")),
+          h("option", { value: "streamable-http" }, t("form.http"))))
         : null,
-      skills.length
-        ? h("div", { className: "dsh-msm-list" }, skills.map((skill) => h("article", { className: "dsh-msm-card", key: skill.name },
-          h("div", { className: "dsh-msm-card-header" },
-            h("div", null,
-              h("h3", { className: "dsh-msm-card-title" }, skill.name),
-              h("div", { className: "dsh-msm-muted" }, `${skill.source || "Skill"}${skill.provider ? ` · ${skill.provider}` : ""}${skill.description ? ` · ${skill.description}` : ""}`),
-              skill.path ? h("div", { className: "dsh-msm-muted" }, skill.path) : null),
-            h("div", { className: "dsh-msm-actions" },
-              h("button", { className: "dsh-msm-button", type: "button", disabled: skillsBusy, onClick: () => void loadSkill(skill.name) }, "查看正文"),
-              skill.canUnregister
-                ? unregisterName === skill.name
-                  ? h(React.Fragment, null,
-                    h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy || !canEditSkills, onClick: () => void unregisterSkill(skill.name) }, "确认注销"),
-                    h("button", { className: "dsh-msm-button", type: "button", onClick: () => setUnregisterName("") }, "取消"))
-                  : h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: skillsBusy || !canEditSkills, onClick: () => setUnregisterName(skill.name) }, "注销")
-                : null)))))
-        : h("div", { className: "dsh-msm-empty" }, skillsBusy ? "正在读取 Skill 目录…"
-          : skillsError ? "Skill 目录读取失败；不能据此判断 Skill 数量。"
-          : !skillsComplete ? "Skill 发现尚未完成。"
-          : "当前 Profile 全局目录没有可见 Skill。"),
-      selectedSkill ? h("article", { className: "dsh-msm-card" },
-        h("div", { className: "dsh-msm-card-header" },
-          h("h3", { className: "dsh-msm-card-title" }, `Skill 正文：${selectedSkill.name}`),
-          h("button", { className: "dsh-msm-button", type: "button", onClick: () => setSelectedSkill(null) }, "关闭")),
-        h("pre", { className: "dsh-msm-pre" }, selectedSkill.content || "（正文为空）")) : null);
-  }
-
-  const hookRuntimeLabel = { disabled: "无启用规则", loading: "桥接器加载中", active: "桥接器已加载", failed: "加载失败", unavailable: "官方模块不可用" };
-  const hookPhaseLabel = (phase) => hookRuntimeLabel[phase] || "未知";
-
-  const hookEventOptions = hookEvents.map((event) => h("option", { key: event, value: event }, event));
-  function hookConfirmButton(rule) {
-    if (!canEditHooks || hooksLocked) return null;
-    const enabling = !rule.enabled;
-    if (hookConfirm?.name === rule.name && hookConfirm.action === (enabling ? "enable" : "disable")) {
-      return h(React.Fragment, null,
-        h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: hooksLocked, onClick: () => void changeHookEnabled(rule, enabling) }, enabling ? "确认启用" : "确认停用"),
-        h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm(null) }, "取消"));
-    }
-    return h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm({ name: rule.name, action: enabling ? "enable" : "disable" }) }, enabling ? "启用" : "停用");
-  }
-  function hookRemoveButton(rule) {
-    if (!canEditHooks || hooksLocked) return null;
-    if (hookConfirm?.name === rule.name && hookConfirm.action === "remove") {
-      return h(React.Fragment, null,
-        h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", disabled: hooksLocked, onClick: () => void removeHook(rule) }, "确认移除"),
-        h("button", { className: "dsh-msm-button", type: "button", onClick: () => setHookConfirm(null) }, "取消"));
-    }
-    return h("button", { className: "dsh-msm-button dsh-msm-button-danger", type: "button", onClick: () => setHookConfirm({ name: rule.name, action: "remove" }) }, "移除");
-  }
-  function renderHooks() {
-    const rules = hooksCatalog?.rules || [];
-    const runtime = hooksCatalog?.runtime;
-    return h("section", { className: "dsh-msm-panel" },
-      h("div", { className: "dsh-msm-row" },
-        h(Field, { label: "DSH Hook 规则", hint: "仅管理本 Profile 内由官方桥接器执行的命令 Hook；不读取或修改外部 Claude Code 配置。" }),
-        h("button", { className: "dsh-msm-button", type: "button", disabled: hooksLocked, onClick: () => void refreshHooks() }, hooksBusy ? "读取中…" : "刷新 Hooks"),
-        h("button", { className: "dsh-msm-button", type: "button", disabled: !canEditHooks || hooksLocked, onClick: () => void retryHooks() }, "重新加载"),
-        h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "button", disabled: !canEditHooks || hooksLocked, onClick: createHook }, "新建 Hook 规则")),
-      runtime ? h("div", { className: "dsh-msm-muted" },
-        `运行状态：${hookPhaseLabel(runtime.phase)} · 启用规则：${runtime.enabledCount}。官方桥接器已加载不代表规则已执行；新规则默认停用。`) : null,
-      runtime?.error ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, runtime.error) : null,
-      hooksError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, hooksError) : null,
-      hooksNotice ? h("div", { className: "dsh-msm-notice dsh-msm-success", role: "status" }, hooksNotice) : null,
-      !hooksCatalog && hooksBusy ? h("div", { className: "dsh-msm-muted" }, "正在读取 Hook 目录…") : null,
-      hookFormOpen ? h("form", { className: "dsh-msm-card", "aria-label": hookEditing ? "编辑 Hook" : "新建 Hook", onSubmit: saveHook },
-        h(Field, { label: "规则名称", hint: "1–64 位小写字母、数字、下划线或短横线；创建后不可修改。" },
-          h("input", { className: "dsh-msm-input", "aria-label": "Hook 规则名称", value: hookName, disabled: !!hookEditing, required: true, onChange: (event) => setHookName(event.currentTarget.value) })),
-        h(Field, { label: "触发事件" }, h("select", { className: "dsh-msm-select", "aria-label": "Hook 触发事件", value: hookEvent, onChange: (event) => { setHookEvent(event.currentTarget.value); if (!hasMatcher(event.currentTarget.value)) setHookMatcher(""); } }, hookEventOptions)),
-        hasMatcher(hookEvent) ? h(Field, { label: "matcher（可选）", hint: "留空或 * 匹配全部；工具事件按工具名，SessionStart 按来源。" },
-          h("input", { className: "dsh-msm-input", "aria-label": "Hook matcher", value: hookMatcher, onChange: (event) => setHookMatcher(event.currentTarget.value) })) : null,
-        h(Field, { label: hookEditing ? "命令（留空保留现有命令）" : "命令", hint: "命中事件时将通过官方桥接器执行；请勿在命令中写入凭据。" },
-          h("textarea", { className: "dsh-msm-textarea dsh-msm-textarea-short", "aria-label": "Hook 命令", value: hookCommand, required: !hookEditing, spellCheck: false, onChange: (event) => setHookCommand(event.currentTarget.value) })),
-        h(Field, { label: "超时（秒，1–600）" },
-          h("input", { className: "dsh-msm-input", "aria-label": "Hook 超时秒数", type: "number", min: 1, max: 600, value: hookTimeout, required: true, onChange: (event) => setHookTimeout(event.currentTarget.value) })),
+      transport === "stdio"
+        ? h(React.Fragment, null,
+          expressionNote("command"),
+          draft.locked.command === undefined
+            ? h(Field, { label: t("form.command"), hint: t("form.commandHint") },
+              h("input", {
+                className: "dsh-msm-input",
+                "aria-label": t("form.command"),
+                value: draft.command,
+                disabled: locked,
+                onChange: (event) => set("command", event.currentTarget.value),
+              }))
+            : null,
+          expressionNote("args"),
+          draft.locked.args === undefined
+            ? h(Field, { label: t("form.args"), hint: t("form.argsHint") },
+              h("textarea", {
+                className: "dsh-msm-input dsh-msm-textarea",
+                "aria-label": t("form.args"),
+                value: draft.args,
+                disabled: locked,
+                spellCheck: false,
+                onChange: (event) => set("args", event.currentTarget.value),
+              }))
+            : null,
+          expressionNote("cwd"),
+          draft.locked.cwd === undefined
+            ? h(Field, { label: t("form.cwd"), hint: t("form.cwdHint") },
+              h("input", {
+                className: "dsh-msm-input",
+                "aria-label": t("form.cwd"),
+                value: draft.cwd,
+                disabled: locked,
+                onChange: (event) => set("cwd", event.currentTarget.value),
+              }))
+            : null)
+        : h(React.Fragment, null,
+          expressionNote("url"),
+          draft.locked.url === undefined
+            ? h(Field, { label: t("form.url"), hint: t("form.urlHint") },
+              h("input", {
+                className: "dsh-msm-input",
+                "aria-label": t("form.url"),
+                value: draft.url,
+                disabled: locked,
+                onChange: (event) => set("url", event.currentTarget.value),
+              }))
+            : null),
+      h("div", { className: "dsh-msm-field" },
+        h("span", { className: "dsh-msm-label" }, credentialLabel),
+        draft.credentials.map(renderCredential),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-button dsh-msm-button-primary", type: "submit", disabled: !canEditHooks || hooksLocked }, hooksLocked ? "提交中…" : "保存规则"),
-          h("button", { className: "dsh-msm-button", type: "button", onClick: () => { setHookFormOpen(false); setHookConfirm(null); } }, "关闭表单"))) : null,
-      rules.length ? renderHookRules(rules) : renderHookEmpty());
+          h("button", {
+            className: "dsh-msm-btn dsh-msm-link",
+            type: "button",
+            disabled: locked,
+            onClick: () => set("credentials", [...draft.credentials, { key: "", value: "", existing: false }]),
+          }, t("action.addCredential"))),
+        h("span", { className: "dsh-msm-hint" }, t("form.credentialHint"))),
+      h("div", { className: "dsh-msm-field" },
+        h("button", {
+          className: "dsh-msm-btn dsh-msm-link",
+          type: "button",
+          onClick: () => set("advancedOpen", !draft.advancedOpen),
+        }, (draft.advancedOpen ? "▾ " : "▸ ") + t("action.advanced")),
+        draft.advancedOpen
+          ? h("div", { className: "dsh-msm-field" },
+            expressionNote("toolCallTimeoutMs"),
+            draft.locked.toolCallTimeoutMs === undefined
+              ? h(Field, { label: t("form.timeout") },
+                h("input", { className: "dsh-msm-input", "aria-label": t("form.timeout"), inputMode: "numeric", value: draft.timeout, disabled: locked, onChange: (event) => set("timeout", event.currentTarget.value) }))
+              : null,
+            expressionNote("maxInstructionBytes"),
+            draft.locked.maxInstructionBytes === undefined
+              ? h(Field, { label: t("form.instructionBytes") },
+                h("input", { className: "dsh-msm-input", "aria-label": t("form.instructionBytes"), inputMode: "numeric", value: draft.instructionBytes, disabled: locked, onChange: (event) => set("instructionBytes", event.currentTarget.value) }))
+              : null,
+            h("label", { className: "dsh-msm-check" },
+              h("input", {
+                type: "checkbox",
+                "aria-label": t("form.failOnStartup"),
+                checked: draft.failOnStartup,
+                disabled: locked || isRecord(server?.config?.fields?.failOnStartupError),
+                onChange: (event) => set("failOnStartup", event.currentTarget.checked),
+              }),
+              t("form.failOnStartup")),
+            h("span", { className: "dsh-msm-hint" }, t("form.failOnStartupHint")),
+            draft.reconnectLocked?.enabled === undefined
+              ? h("label", { className: "dsh-msm-check" },
+                h("input", {
+                  type: "checkbox",
+                  "aria-label": t("form.reconnect"),
+                  checked: draft.reconnectEnabled,
+                  disabled: locked,
+                  onChange: (event) => setDraft((current) => current === null ? current : { ...current, reconnectEnabled: event.currentTarget.checked, reconnectTouched: true }),
+                }),
+                t("form.reconnect"))
+              : expressionNote("reconnect.enabled"),
+            h(Field, { label: t("form.reconnectInitial") },
+              h("input", { className: "dsh-msm-input", "aria-label": t("form.reconnectInitial"), inputMode: "numeric", value: draft.reconnectInitial, disabled: locked, onChange: (event) => set("reconnectInitial", event.currentTarget.value) })),
+            h(Field, { label: t("form.reconnectMax") },
+              h("input", { className: "dsh-msm-input", "aria-label": t("form.reconnectMax"), inputMode: "numeric", value: draft.reconnectMax, disabled: locked, onChange: (event) => set("reconnectMax", event.currentTarget.value) })),
+            h(Field, { label: t("form.reconnectAttempts") },
+              h("input", { className: "dsh-msm-input", "aria-label": t("form.reconnectAttempts"), inputMode: "numeric", value: draft.reconnectAttempts, disabled: locked, onChange: (event) => set("reconnectAttempts", event.currentTarget.value) })))
+          : null),
+      h("div", { className: "dsh-msm-actions" },
+        h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "submit", disabled: locked || !canWriteMcp }, busy === "save" ? t("action.saving") : t("action.save")),
+        !creating && server.overridden
+          ? h("button", { className: "dsh-msm-btn", type: "button", disabled: locked || !canWriteMcp, onClick: resetEntry }, t("action.reset"))
+          : null,
+        h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: closeForm }, t("action.cancel"))));
+    }
+
+    function renderMcp() {
+      const list = servers ?? [];
+      return h("div", { className: "dsh-msm-list" },
+        duplicates.length ? h("div", { className: "dsh-msm-note" }, t("mcp.duplicate", { names: duplicates.join(", ") })) : null,
+        !toolsAvailable ? h("div", { className: "dsh-msm-muted" }, t("mcp.toolsUnavailable")) : null,
+        form !== null ? renderForm() : null,
+        servers === null ? null
+          : list.length === 0
+            ? h("div", { className: "dsh-msm-empty" }, t("mcp.empty"), " ", t("mcp.emptyHint"))
+            : h("div", { className: "dsh-msm-list" }, list.map(renderServer)),
+        ungrouped.length
+          ? h("details", { className: "dsh-msm-note dsh-msm-details" },
+            h("summary", null, t("mcp.ungrouped", { count: ungrouped.length })),
+            h("ul", { className: "dsh-msm-tool-list" }, ungrouped.map((tool) => h("li", { key: tool }, tool))))
+          : null,
+        h("div", { className: "dsh-msm-muted" }, t("mcp.footnote")));
+    }
+
+    function renderSkill(skill) {
+      const detail = [skill.source, skill.provider, skill.description].filter((part) => typeof part === "string" && part).join(" · ");
+      const removing = confirm?.kind === "unregister" && confirm.name === skill.name;
+      return h("article", { className: "dsh-msm-card", key: skill.name },
+        h("div", { className: "dsh-msm-card-top" },
+          h("div", { className: "dsh-msm-title" },
+            h("span", { className: "dsh-msm-name" }, skill.name),
+            skill.canUnregister ? h("span", { className: "dsh-msm-tag" }, "runtime") : null),
+          h("div", { className: "dsh-msm-actions" },
+            h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => viewSkill(skill.name) }, t("action.view")),
+            skill.canUnregister
+              ? removing
+                ? h(React.Fragment, null,
+                  h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => unregisterSkill(skill.name) }, t("action.confirmUnregister")),
+                  h("button", { className: "dsh-msm-btn", type: "button", onClick: () => setConfirm(null) }, t("action.cancel")))
+                : h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => setConfirm({ kind: "unregister", name: skill.name }) }, t("action.unregister"))
+              : null)),
+        detail ? h("div", { className: "dsh-msm-muted" }, detail) : null,
+        typeof skill.path === "string" && skill.path ? h("div", { className: "dsh-msm-muted" }, skill.path) : null);
+    }
+
+    function renderSkillForm() {
+      const update = (patch) => setSkillForm((current) => current === null ? current : { ...current, ...patch });
+      return h("form", { className: "dsh-msm-card dsh-msm-form", "aria-label": t("skills.register"), onSubmit: submitSkill },
+        h("h2", { className: "dsh-msm-form-title" }, t("skills.register")),
+        h(Field, { label: t("skills.name"), hint: t("skills.nameHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.name"), value: skillForm.name, disabled: locked, onChange: (event) => update({ name: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.description") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.description"), value: skillForm.description, disabled: locked, onChange: (event) => update({ description: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.whenToUse"), hint: t("skills.whenToUseHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.whenToUse"), value: skillForm.whenToUse, disabled: locked, onChange: (event) => update({ whenToUse: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.content") },
+          h("textarea", { className: "dsh-msm-input dsh-msm-textarea", "aria-label": t("skills.content"), value: skillForm.content, disabled: locked, spellCheck: false, required: true, onChange: (event) => update({ content: event.currentTarget.value }) })),
+        h("div", { className: "dsh-msm-actions" },
+          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "submit", disabled: locked || !canWriteSkills }, busy === "skill-save" ? t("action.saving") : t("action.save")),
+          h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => setSkillForm(null) }, t("action.cancel"))));
+    }
+
+    function renderSkills() {
+      const list = skills ?? [];
+      return h("div", { className: "dsh-msm-list" },
+        h("div", { className: "dsh-msm-actions" },
+          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "button", disabled: locked || !canWriteSkills, onClick: openSkillForm }, t("skills.register"))),
+        h("div", { className: "dsh-msm-muted" }, t("skills.note")),
+        !skillsComplete ? h("div", { className: "dsh-msm-note" }, t("skills.incomplete")) : null,
+        skillForm !== null ? renderSkillForm() : null,
+        skills === null ? null
+          : list.length === 0
+            ? h("div", { className: "dsh-msm-empty" }, t("skills.empty"))
+            : h("div", { className: "dsh-msm-list" }, list.map(renderSkill)),
+        skillView !== null
+          ? h("article", { className: "dsh-msm-card" },
+            h("div", { className: "dsh-msm-card-top" },
+              h("span", { className: "dsh-msm-name" }, t("skills.viewTitle", { name: skillView.name })),
+              h("button", { className: "dsh-msm-btn", type: "button", onClick: () => setSkillView(null) }, t("action.close"))),
+            h("pre", { className: "dsh-msm-pre" }, skillView.content || t("skills.contentEmpty")))
+          : null);
+    }
+
+    return h("section", { className: "dsh-msm" },
+      h("div", { className: "dsh-msm-head" },
+        h("div", { className: "dsh-msm-tabs", role: "tablist", "aria-label": t("tabs.label") },
+          renderTab("mcp", t("tab.mcp"), (servers ?? []).length),
+          renderTab("skills", t("tab.skills"), (skills ?? []).length)),
+        h("div", { className: "dsh-msm-actions" },
+          tab === "mcp"
+            ? h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "button", disabled: locked || !canWriteMcp || form !== null, onClick: openCreate }, t("action.add"))
+            : null,
+          h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: refresh }, busy === "refresh" ? t("state.loading") : t("action.refresh")))),
+      statusNotice(),
+      error ? h("div", { className: "dsh-msm-note dsh-msm-note-error", role: "alert" }, error) : null,
+      notice ? h("div", { className: "dsh-msm-note dsh-msm-note-ok", role: "status" }, notice) : null,
+      busy === "load" ? h("div", { className: "dsh-msm-muted" }, t("state.loading")) : null,
+      tab === "mcp" ? renderMcp() : renderSkills());
   }
 
-  function renderHookRules(rules) {
-    return h("div", { className: "dsh-msm-list" }, rules.map(renderHookRule));
-  }
-
-  function renderHookEmpty() {
-    return h("div", { className: "dsh-msm-empty" }, hooksBusy && !hooksCatalog ? "正在读取 Hook 目录…"
-      : hooksError ? "Hook 目录读取失败；不能据此判断规则数量。"
-      : "当前 Profile 没有托管 Hook 规则。");
-  }
-
-  function renderHookRule(rule) {
-    const summary = h("div", null,
-      h("h3", { className: "dsh-msm-card-title" }, rule.name),
-      h("div", { className: "dsh-msm-muted" }, `${rule.event}${rule.matcher ? ` · matcher: ${rule.matcher}` : ""} · 超时 ${rule.timeoutSec} 秒 · 命令${rule.commandConfigured ? "已配置" : "未配置"}`));
-    const actions = h("div", { className: "dsh-msm-actions" },
-      rule.enabled ? h("span", { className: "dsh-msm-success" }, "已启用") : h("span", { className: "dsh-msm-muted" }, "已停用"),
-      h("button", { className: "dsh-msm-button", type: "button", disabled: !canEditHooks || hooksLocked, onClick: () => editHook(rule) }, "编辑"),
-      hookConfirmButton(rule),
-      hookRemoveButton(rule));
-    return h("article", { className: "dsh-msm-card", key: rule.name },
-      h("div", { className: "dsh-msm-card-header" }, summary, actions));
-  }
-
-  return h("main", { className: "dsh-msm-page" },
-    h("header", { className: "dsh-msm-header" },
-      h("div", null,
-        h("h1", { className: "dsh-msm-title" }, "MCP 与 Skill 管理"),
-        h("p", { className: "dsh-msm-subtitle" }, "查看 Profile MCP Server 的工具分组，管理 MCP 配置与 Runtime Skill。"))),
-    h("section", { className: "dsh-msm-card", "aria-label": "兼容检查" },
-      h("div", { className: "dsh-msm-card-header" },
-        h("h2", { className: "dsh-msm-card-title" }, "兼容检查"),
-        h("button", { className: "dsh-msm-button", type: "button", disabled: compatibilityBusy || writeCount > 0, onClick: () => void refreshCompatibility() }, compatibilityBusy ? "检查中…" : "重新检查兼容性")),
-      compatibilityError ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, `${compatibilityError} 当前写入已禁用，仍可尝试读取目录。`) : null,
-      compatibility ? h(React.Fragment, null,
-        h("div", null, `DSH：${compatibility.runtimeVersion || "无法识别"} · 插件：${compatibility.pluginVersion}`),
-        h("div", { className: "dsh-msm-muted" }, `已做隔离回归的 DSH 版本：${compatibility.testedRuntimeVersions.join("、") || "无"}。安装范围不等于已验证版本。`),
-        h("div", { role: "status", className: "dsh-msm-notice" }, compatibility.versionStatus === "tested"
-          ? `版本匹配隔离回归基线；配置写入${canEditMcp ? "已启用" : "已禁用"}，Runtime Skill 写入${canEditSkills ? "已启用" : "已禁用"}，Hook 写入${canEditHooks ? "已启用" : "已禁用"}。接口检查仅确认方法存在，不代表外部 MCP 已连接。`
-          : "运行版本未验证或无法识别，配置及 Runtime Skill 操作保持只读。"),
-        h("details", null,
-          h("summary", null, "接口能力"),
-          Object.entries({ mcpCatalog: "MCP 配置目录", mcpDiscovery: "工具目录", skillCatalog: "Skill 目录与正文", configEdit: "配置编辑", runtimeSkills: "Runtime Skill 注册", hookCatalog: "Hook 目录", hookRuntime: "Hook 桥接器运行环境" })
-            .map(([key, label]) => h("div", { className: "dsh-msm-muted", key }, `${label}：${compatibility.capabilities[key] === true ? "接口可用" : "接口缺失"}`))))
-        : compatibilityBusy ? h("div", { className: "dsh-msm-muted" }, "正在检查版本和接口，写入暂不可用。") : null),
-    writeCount ? h("div", { className: "dsh-msm-notice", role: "status" }, "正在提交操作…") : null,
-    h("nav", { className: "dsh-msm-tabs", role: "tablist", "aria-label": "管理类型" },
-      h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "mcp", onClick: () => setTab("mcp") }, "MCP Servers"),
-      h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "hooks", onClick: () => setTab("hooks") }, "Hooks"),
-      h("button", { className: "dsh-msm-tab", type: "button", role: "tab", "aria-selected": tab === "skills", onClick: () => setTab("skills") }, "Skills")),
-    tab === "mcp" ? renderMcp() : tab === "hooks" ? renderHooks() : renderSkills());
-}
-
-return ManagerPage;
+  return ManagerPage;
 }
 
 function apply(ctx) {
   const Page = createManagerPage(ctx.connection);
-  // Register the page first: a stylesheet failure must not cost the settings entry itself.
+  const translate = (key, params) => {
+    const face = ctx.get("locale");
+    if (face !== undefined && typeof face.bind === "function") return face.bind(NS)(key, params);
+    return fallbackT(key, params);
+  };
+  // Dictionaries register whenever a locale face exists; without one the page keeps its built-in copy.
+  if (typeof ctx.inject === "function") {
+    ctx.inject(["locale"], (localized) => {
+      localized.effect(() => localized.locale.register(NS, { zh, en }), "mcp-skill-manager dictionaries");
+    });
+  }
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "mcp-skill-manager",
     order: 25,
-    label: "MCP & Skills",
+    label: () => translate("nav"),
+    // A locale seat without an installed locale face fails the assembly, so declare it only when present.
+    ...(ctx.get("locale") === undefined ? {} : { locale: NS }),
   }, Page));
   ctx.effect(() => {
     const tag = document.createElement("style");

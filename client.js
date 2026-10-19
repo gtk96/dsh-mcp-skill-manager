@@ -621,10 +621,12 @@ function createManagerPage(connection) {
 
     /** One short sentence for a write's outcome; `head` names what happened. */
     function outcomeText(head, value) {
+      // `head` is a complete sentence, so the suffix joins at the clause boundary, not after its full stop.
+      const stem = head.replace(/[。.；;！!]+$/, "");
       const application = value?.application;
-      if (application === "restart-required") return `${head}${t("notice.restartSuffix")}`;
-      if (application === "overridden") return `${head}${t("notice.overriddenSuffix")}`;
-      return `${head}${t("notice.appliedSuffix")}`;
+      if (application === "restart-required") return `${stem}${t("notice.restartSuffix")}`;
+      if (application === "overridden") return `${stem}${t("notice.overriddenSuffix")}`;
+      return `${stem}${t("notice.appliedSuffix")}`;
     }
 
     function refresh() {

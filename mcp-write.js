@@ -21,6 +21,7 @@ import {
   MCP_CLIENT,
   insertServerRow,
   parsePatch,
+  removeAllOverrides,
   removeInsertRow,
   removeOverride,
   renderPatch,
@@ -250,6 +251,8 @@ export function createMcpPatch(ctx, compatibility, { filename, hmr } = {}) {
     const outcome = await commit((document) => {
       if (removeInsertRow(document, id)) {
         removed = 'insert';
+        // The row is gone, so every override that addressed it, config included, now points at nothing.
+        removeAllOverrides(document, id, entry.options.name);
         return true;
       }
       removed = 'disabled';

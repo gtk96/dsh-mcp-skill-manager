@@ -96,6 +96,19 @@ await check('Creating a server sends the full definition and shows the applied n
   assert.equal(ui.logged.length, 0);
 });
 
+await check('A toggle notice joins the outcome without doubling punctuation', async (t) => {
+  const host = await fixture(servers());
+  t.after(() => host.close());
+  const ui = await page(t, host);
+  const toggle = ui.button('禁用', card(ui, 'bundled'));
+  await act(async () => { toggle.props.onClick(); await ui.flush(); });
+  const notice = ui.statuses().join(' ');
+  assert.match(notice, /已禁用/);
+  assert.equal(notice.includes('。，'), false, 'A full stop must not precede a clause comma');
+  assert.equal(/[。.]。/.test(notice), false);
+  assert.equal(ui.logged.length, 0);
+});
+
 await check('A remote server is validated as a URL before it reaches the Host', async (t) => {
   const host = await fixture(servers());
   t.after(() => host.close());

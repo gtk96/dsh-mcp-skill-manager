@@ -203,6 +203,29 @@ export function setDisabled(document, override) {
  * @returns {boolean} Whether anything was removed.
  */
 export function removeOverride(document, entryId, name) {
+  return dropOverrideRows(document, entryId, name, false);
+}
+
+/**
+ * Delete every override row for an entry, including rows that carry `config`.
+ * Only safe once the definition itself is gone: the override would then target nothing.
+ * @param {import('yaml').Document} document Parsed document.
+ * @param {string} entryId Entry id.
+ * @param {string} name Module name.
+ * @returns {boolean} Whether anything was removed.
+ */
+export function removeAllOverrides(document, entryId, name) {
+  return dropOverrideRows(document, entryId, name, true);
+}
+
+/**
+ * @param {import('yaml').Document} document Parsed document.
+ * @param {string} entryId Entry id.
+ * @param {string} name Module name.
+ * @param {boolean} includingConfig Whether rows carrying `config` go too.
+ * @returns {boolean} Whether anything was removed.
+ */
+function dropOverrideRows(document, entryId, name, includingConfig) {
   const matches = [];
   for (let index = document.contents.items.length - 1; index >= 0; index -= 1) {
     const row = document.contents.items[index];
@@ -223,7 +246,7 @@ export function removeOverride(document, entryId, name) {
     }
     const onlyIdentity = row.items.every((pair) => isScalar(pair.key)
       && (pair.key.value === 'id' || pair.key.value === 'name'));
-    if (!onlyIdentity) continue;
+    if (!onlyIdentity && !includingConfig) continue;
     document.deleteIn([index]);
     carryComment(document, index, comment);
     changed = true;

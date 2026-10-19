@@ -91,6 +91,32 @@ await check('Removing an inserted server deletes its row and keeps the file head
   assert.equal(host.profile.entries.has('mcp-base'), false);
 });
 
+await check('Removing an inserted server also drops the override written while it existed', async (t) => {
+  const host = await fixture(base());
+  t.after(() => host.close());
+  assert.equal((await host.rpc('mcp.set-enabled', { entryId: 'mcp-base', enabled: false })).ok, true);
+  assert.match(host.profile.readPatch(), /disabled: true/, 'The toggle must leave an override behind');
+  const removed = await host.rpc('mcp.remove', { entryId: 'mcp-base' });
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+  assert.equal(removed.value.removed, 'insert');
+  assert.deepEqual(insertedIds(host), []);
+  assert.equal(host.profile.readPatch().includes('mcp-base'), false, 'No override may outlive the row it addressed');
+  assert.equal(host.profile.entries.has('mcp-base'), false);
+});
+
+await check('Removing an inserted server also drops a config override written by an edit', async (t) => {
+  const host = await fixture(base());
+  t.after(() => host.close());
+  assert.equal((await host.rpc('mcp.update', { entryId: 'mcp-base', patch: { toolCallTimeoutMs: 5000 } })).ok, true);
+  assert.match(host.profile.readPatch(), /toolCallTimeoutMs: 5000/, 'The edit must leave a config override behind');
+  const removed = await host.rpc('mcp.remove', { entryId: 'mcp-base' });
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+  assert.equal(removed.value.removed, 'insert');
+  assert.deepEqual(insertedIds(host), []);
+  assert.equal(host.profile.readPatch().includes('mcp-base'), false, 'No override may outlive the row it addressed');
+  assert.equal(host.profile.entries.has('mcp-base'), false);
+});
+
 await check('Removing a server another layer owns writes a disable override instead', async (t) => {
   const host = await fixture(base());
   t.after(() => host.close());

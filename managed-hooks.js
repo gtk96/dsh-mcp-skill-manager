@@ -73,10 +73,14 @@ export async function writeHookArtifact(text, ownerId, instanceNonce) {
 
 /** Replace the artifact's contents with nothing, without deleting the file itself. */
 export async function truncateArtifact(file) {
+  // Windows has no O_NOFOLLOW, so refuse a link by lstat first and then confirm the opened handle
+  // is the same regular file before truncating anything.
+  const before = await lstat(file);
+  if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) throw new ManagedHooksError(failure.failed);
   const handle = await open(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.nlink !== 1) throw new ManagedHooksError(failure.failed);
+    if (!info.isFile() || info.nlink !== 1 || info.ino !== before.ino || info.dev !== before.dev) throw new ManagedHooksError(failure.failed);
     await handle.truncate(0);
     await handle.sync();
   } finally { await handle.close(); }
@@ -109,8 +113,8 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
   const key = randomBytes(32);
   /** One artifact slot per manager instance, so repeated reloads overwrite one file instead of piling up. */
   const instanceNonce = randomBytes(16).toString('hex');
-  /** Only the built-in writer needs a pre-declared slot; an injected writer returns its own path. */
-  const hookArtifactSlot = options.hookArtifactSlot ?? (options.writeArtifact ? undefined : hookArtifactPath);
+  /** The slot is always known before a write so a timed-out write can still be emptied later. */
+  const hookArtifactSlot = options.hookArtifactSlot ?? hookArtifactPath;
   let alive = true;
   let phase = 'disabled';
   let runtimeError;
@@ -260,7 +264,7 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
       if (!alive) return;
       if (!isDeepStrictEqual(rules, normalized(definitions()).filter(([, rule]) => rule.enabled))) { dirty = true; return; }
       phase = 'active';
-    } catch {
+    } catch (error) {
       phase = 'failed'; runtimeError = failure.failed;
       try { await release(); } catch { runtimeError = failure.cleanup; }
     }
@@ -270,8 +274,13 @@ export function createManagedHooks(ctx, config, compatibility, options = {}) {
     dirty = true;
     if (!pending) {
       pending = Promise.resolve().then(async () => {
-        while (alive && dirty) { dirty = false; await reconcile(); }
-      }).catch(() => { phase = 'failed'; runtimeError = failure.failed; }).finally(() => { pending = undefined; });
+        while (alive && dirty) {
+          dirty = false;
+          await reconcile();
+        }
+      }).catch((error) => {
+        phase = 'failed'; runtimeError = failure.failed;
+      }).finally(() => { pending = undefined; });
     }
     return pending;
   }

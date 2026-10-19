@@ -69,7 +69,7 @@ for (const version of ['0.2.1-alpha.4', '0.2.1-rc.3', '1.0.0', undefined, 'not-a
       assert.match(result.error.message, /只读/);
     }
     await assert.rejects(host.call('dsh_manage_mcp_servers', { ...mutations[0][1], action: 'upsert' }), /设置页|发现与读取|discover, list/);
-    await assert.rejects(host.call('dsh_manage_skills', { ...mutations[2][1], action: 'register' }), /只读/);
+    await assert.rejects(host.call('dsh_manage_skills', { ...mutations[2][1], action: 'register' }), /设置页|list, get|注册与注销/);
     assert.equal(host.trace.edits + host.trace.registrations + host.trace.rollbacks, 0);
     assert.equal((await host.rpc('mcp.catalog')).ok, true);
     assert.equal((await host.rpc('skills.list')).value.skills[0].name, localSkill.name);

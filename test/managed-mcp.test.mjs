@@ -171,7 +171,8 @@ await check('HTTP form saves HTTP configuration and hides stdio fields', async (
   assert.equal(host.managerEntry.options.config.managedServers['ui-http'].transport, 'streamable-http');
   assert.equal(host.bridgeRuns.has('ui-http'), true);
   assert.ok(ui.content().includes('MCP 配置已保存'));
-  assert.deepEqual(ui.alerts(), []);
+  // The saved Server exposes no tools in this fixture, so the empty-Server warning is the only alert.
+  assert.ok(ui.alerts().every((message) => message.includes('没有任何工具')));
 });
 
 await check('Malformed argument JSON never reaches the add RPC', async (t) => {
@@ -182,6 +183,39 @@ await check('Malformed argument JSON never reaches the add RPC', async (t) => {
   await submit(ui);
   assert.ok(ui.alerts().some((message) => message.includes('JSON 格式无效')));
   assert.equal(ui.mutations().length, 0);
+});
+
+await check('Reconnecting a native MCP row rewrites only its bookkeeping field', async (t) => {
+  const host = await fixture();
+  t.after(() => host.close());
+  const native = { id: 'include:mcp-native', options: { id: 'mcp-native', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'native', transport: 'streamable-http', url: 'http://fixture.invalid/mcp', headers: {} } } };
+  host.rows.push({ entry: native, inherited: {}, override: {} });
+  const before = structuredClone(native.options.config);
+  const first = await host.rpc('mcp.reconnect', { entryId: 'include:mcp-native' });
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(first.value.attempt, 1);
+  const after = native.options.config;
+  assert.equal(after.serverName, before.serverName);
+  assert.equal(after.url, before.url);
+  assert.deepEqual(after.headers, before.headers);
+  assert.equal(after.mcpManagerReconnect.attempt, 1);
+  const second = await host.rpc('mcp.reconnect', { entryId: 'include:mcp-native' });
+  assert.equal(second.value.attempt, 2, 'Each reconnect must change the field so DSH remounts the row');
+});
+
+await check('Reconnect refuses a managed row and a caller that is not the owner', async (t) => {
+  const managedHost = await fixture({ managed: true }); t.after(() => managedHost.close());
+  const managed = await managedHost.rpc('mcp.reconnect', { entryId: managedHost.managerEntry.id });
+  assert.equal(managed.ok, false);
+  assert.match(managed.error.message, /托管|重试加载/);
+
+  const denied = await fixture({ admitDenied: true });
+  t.after(() => denied.close());
+  const native = { id: 'include:mcp-native', options: { id: 'mcp-native', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'native', transport: 'streamable-http', url: 'http://fixture.invalid/mcp' } } };
+  denied.rows.push({ entry: native, inherited: {}, override: {} });
+  const refused = await denied.rpc('mcp.reconnect', { entryId: 'include:mcp-native' });
+  assert.equal(refused.error.code, 'MCP_SKILL_MANAGER_FORBIDDEN');
+  assert.equal(denied.trace.edits, 0);
 });
 
 await check('Generic mapping writes cannot bypass validation of managed configuration', async (t) => {

@@ -111,11 +111,19 @@ async function fixture(options = {}) {
         fiber.ctx.emit(self, 'loader/volatile-update', [['managedServers'], ['managedHooks']]);
         return;
       }
-      assert.equal(target, entry);
+      if (target === entry) {
+        trace.edits++;
+        const next = change(clone(entry.options.config), clone(inherited));
+        entry.options.config = clone(next);
+        override = clone(next);
+        return;
+      }
+      // Any other registered row is editable too, matching a real Loader entry.
+      const known = rows.some((row) => row.entry === target);
+      assert.equal(known, true, 'The edited row must be one the fixture registered');
       trace.edits++;
-      const next = change(clone(entry.options.config), clone(inherited));
-      entry.options.config = clone(next);
-      override = clone(next);
+      const nextOther = change(clone(target.options.config ?? {}), {});
+      target.options.config = clone(nextOther);
     },
   };
   const skills = {
@@ -327,17 +335,17 @@ await check('Optional Web arrival and removal do not stop Host tools or leak rou
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 18);
+  assert.equal(host.routes.size, 19);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 3);
   await host.attachWeb();
-  assert.equal(host.routes.size, 18);
+  assert.equal(host.routes.size, 19);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {
   const host = await fixture();
-  await host.call('dsh_manage_skills', { action: 'register', name: 'fixture-skill', description: 'Fixture', content: 'Fixture instructions' });
+  await host.rpc('skills.register', { name: 'fixture-skill', description: 'Fixture', content: 'Fixture instructions' });
   assert.equal(host.runtime.size, 1);
   await host.close();
   assert.equal(host.routes.size, 0);
@@ -352,7 +360,7 @@ await check('Plugin unload releases a Runtime Skill while post-registration disc
   const host = await fixture({
     snapshot: ({ runtime }) => ++snapshots === 2 ? observed : { skills: [...runtime.values()], complete: true },
   });
-  const registering = host.call('dsh_manage_skills', { action: 'register', name: 'late-skill', description: 'Late', content: 'Fixture instructions' });
+  const registering = host.rpc('skills.register', { name: 'late-skill', description: 'Late', content: 'Fixture instructions' });
   await tick();
   assert.equal(snapshots, 2);
   assert.equal(host.runtime.size, 1);
@@ -360,7 +368,7 @@ await check('Plugin unload releases a Runtime Skill while post-registration disc
   await host.close();
   assert.equal(host.runtime.size, 0);
   releaseObserved({ skills: saved, complete: true });
-  await assert.rejects(registering);
+  assert.equal((await registering).ok, false);
   assert.equal(host.runtime.size, 0);
 });
 
@@ -456,7 +464,9 @@ await check('Skill discovery receives the actual Agent scope and session cwd', a
 await check('Incomplete initial Skill discovery prevents any Runtime registration', async (t) => {
   const host = await fixture({ snapshot: () => ({ skills: [], complete: false }) });
   t.after(() => host.close());
-  await assert.rejects(host.call('dsh_manage_skills', { action: 'register', name: 'fixture-skill', description: 'Fixture', content: 'Fixture' }), /incomplete/);
+  const refused = await host.rpc('skills.register', { name: 'fixture-skill', description: 'Fixture', content: 'Fixture' });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error.message, /incomplete/);
   assert.equal(host.trace.registrations, 0);
   assert.equal(host.runtime.size, 0);
 });
@@ -466,18 +476,21 @@ await check('Incomplete post-registration discovery rolls back and clears pendin
   const host = await fixture({ snapshot: ({ runtime, trace }) => ({ skills: [...runtime.values()], complete: !(incomplete && trace.registrations > 0) }) });
   t.after(() => host.close());
   const args = { action: 'register', name: 'fixture-skill', description: 'Fixture', content: 'Fixture' };
-  await assert.rejects(host.call('dsh_manage_skills', args), /rolled back/);
+  const rolledBack = await host.rpc('skills.register', { action: 'register', ...args });
+  assert.equal(rolledBack.ok, false);
+  assert.match(rolledBack.error.message, /rolled back|incomplete/);
   assert.equal(host.runtime.size, 0);
   assert.equal(host.trace.rollbacks, 1);
   incomplete = false;
-  assert.equal((await host.call('dsh_manage_skills', args)).persisted, false);
+  assert.equal((await host.rpc('skills.register', { action: 'register', ...args })).value.persisted, false);
 });
 
 await check('Cancellation during registration rolls back the borrowed Skill', async (t) => {
   const controller = new AbortController();
   const host = await fixture({ get: ({ name, runtime }) => { const value = runtime.get(name); controller.abort(); return value; } });
   t.after(() => host.close());
-  await assert.rejects(host.call('dsh_manage_skills', { action: 'register', name: 'fixture-skill', description: 'Fixture', content: 'Fixture' }, { signal: controller.signal }));
+  const cancelled = await host.rpc('skills.register', { name: 'fixture-skill', description: 'Fixture', content: 'Fixture' }, controller.signal);
+  assert.equal(cancelled.ok, false);
   assert.equal(host.runtime.size, 0);
   assert.equal(host.trace.rollbacks, 1);
 });
@@ -486,17 +499,19 @@ await check('Runtime Skill registration preserves body whitespace and rejects bl
   const host = await fixture(); t.after(() => host.close());
   const content = '\n  indented line\n\n';
   const args = { action: 'register', name: 'spaced-skill', description: 'Fixture', content };
-  assert.equal((await host.call('dsh_manage_skills', args)).persisted, false);
+  assert.equal((await host.rpc('skills.register', { action: 'register', ...args })).value.persisted, false);
   assert.equal(host.runtime.get('spaced-skill').content, content);
   assert.equal((await host.rpc('skills.get', { name: 'spaced-skill' })).value.skill.content, content);
-  await assert.rejects(host.call('dsh_manage_skills', { ...args, name: 'blank-skill', content: ' \n\t' }), /required/);
+  const blank = await host.rpc('skills.register', { action: 'register', ...args, name: 'blank-skill', content: ' \n\t' });
+  assert.equal(blank.ok, false);
+  assert.match(blank.error.message, /required|content/);
   assert.equal(host.runtime.has('blank-skill'), false);
 });
 
 await check('A shadowed Runtime Skill cannot be offered or removed as an external Skill', async (t) => {
   const shadow = [];
   const host = await fixture({ skillRows: { profile: shadow } }); t.after(() => host.close());
-  await host.call('dsh_manage_skills', { action: 'register', name: 'shared-skill', description: 'Fixture', content: 'Fixture instructions' });
+  await host.rpc('skills.register', { name: 'shared-skill', description: 'Fixture', content: 'Fixture instructions' });
   shadow.push({ name: 'shared-skill', description: 'External', content: 'External instructions', source: 'project', provider: 'fixture-project' });
   const rows = (await host.rpc('skills.list')).value.skills;
   assert.equal(rows.length, 1);
@@ -517,7 +532,7 @@ await check('Concurrent unregistration cannot dispose one Runtime Skill twice', 
   const gate = new Promise((resolve) => { release = resolve; });
   const host = await fixture({ get: ({ name, runtime }) => gated ? gate.then(() => runtime.get(name)) : runtime.get(name) });
   t.after(() => host.close());
-  await host.call('dsh_manage_skills', { action: 'register', name: 'concurrent-skill', description: 'Fixture', content: 'Instructions' });
+  await host.rpc('skills.register', { name: 'concurrent-skill', description: 'Fixture', content: 'Instructions' });
   gated = true;
   const first = host.rpc('skills.unregister', { name: 'concurrent-skill' });
   await tick();

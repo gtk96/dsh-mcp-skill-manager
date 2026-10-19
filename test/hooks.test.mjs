@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import { act } from 'react-test-renderer';
 import runtimeFixture from '@deepseek-ai/dsh/package.json' with { type: 'json' };
 import './managed-mcp.test.mjs';
 import { check, fixture, page, tick, writeReport } from './regression.test.mjs';
-import { createManagedHooks, normalizeHook, hookEvents } from './managed-hooks.js';
+import { createManagedHooks, normalizeHook, hookEvents, truncateArtifact, hookArtifactPath } from './managed-hooks.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const sourceRequire = createRequire(new URL('../../package.json', import.meta.url));
@@ -55,7 +55,7 @@ async function core(options = {}) {
       readBridge: options.readBridge ?? (async () => defaultBridge),
       readProtocol: async () => protocol,
       writeArtifact: options.writeArtifact ?? (async (text) => { trace.artifacts.push(JSON.parse(text)); const file = resolve(root, 'non-executing-hook-fixture.json'); writeFileSync(file, text, 'utf8'); return file; }),
-      hookArtifactSlot: () => resolve(root, 'non-executing-hook-fixture.json'),
+      hookArtifactSlot: options.hookArtifactSlot ?? (options.writeArtifact ? undefined : () => resolve(root, 'non-executing-hook-fixture.json')),
       startupTimeoutMs: options.startupTimeoutMs ?? 100,
       cleanupTimeoutMs: options.cleanupTimeoutMs ?? 50,
     });
@@ -327,7 +327,7 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
     await ui.click('确认启用');
     assert.equal((await host.rpc('hooks.list')).value.rules[0].enabled, true);
     let state = (await host.rpc('hooks.list')).value.runtime;
-    for (let i = 0; i < 40 && state.phase === 'loading'; i++) {
+    for (let i = 0; i < 200 && state.phase === 'loading'; i++) {
       await act(async () => { await tick(); });
       state = (await host.rpc('hooks.list')).value.runtime;
     }
@@ -420,7 +420,43 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
   });
 }
 
-// Known gap: a derived Hook file written after its timeout can still land after release() and keep its
-// command text. The tracker and the abandoned-write wait are in managed-hooks.js; the cleanup is unproven.
+await check('A write that outlives its timeout still leaves no command text behind', async () => {
+  const slots = [];
+  const slotFor = (ownerId, nonce) => hookArtifactPath(ownerId, nonce);
+  const host = await core({
+    rules: { probe: definition({ enabled: true }) },
+    startupTimeoutMs: 20,
+    hookArtifactSlot: slotFor,
+    // Lands long after the caller gave up, the way a stalled disk or scanner would.
+    writeArtifact: async (text, ownerId, nonce) => {
+      const file = slotFor(ownerId, nonce);
+      slots.push(file);
+      await new Promise((done) => setTimeout(done, 60));
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, text, 'utf8');
+      return file;
+    },
+  });
+  assert.equal((await host.manager.list()).runtime.phase, 'failed');
+  await host.close();
+  assert.ok(slots.length >= 1, 'The stalled writer must have been invoked');
+  const leftover = existsSync(slots[0]) ? readFileSync(slots[0], 'utf8') : '';
+  assert.equal(leftover, '', 'The tracked slot must be emptied even when the write outlived its timeout');
+});
+
+await check('Truncating an artifact refuses a link instead of emptying its target', async () => {
+  const { mkdir, writeFile, symlink, lstat } = await import('node:fs/promises');
+  const folder = resolve(root, 'artifact-link-fixture');
+  await mkdir(folder, { recursive: true });
+  const target = resolve(folder, 'target.txt');
+  const link = resolve(folder, 'hooks.json');
+  writeFileSync(target, 'not-the-artifact', 'utf8');
+  try { await symlink(target, link, 'file'); }
+  catch { return; /* The host forbids creating links without privilege; nothing to assert. */ }
+  assert.equal((await lstat(link)).isSymbolicLink(), true);
+  await assert.rejects(truncateArtifact(link));
+  assert.equal(readFileSync(target, 'utf8'), 'not-the-artifact', 'The link target must stay untouched');
+});
 
 writeReport();

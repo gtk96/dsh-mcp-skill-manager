@@ -11,6 +11,8 @@ export const inject = ['configEditor', 'skills', 'tools'];
 class ManagerError extends Error {}
 
 const rpcPrefix = 'mcp-skill-manager.';
+/** Bookkeeping field the page rewrites to make DSH remount a native MCP row. Never read by DSH itself. */
+const reconnectField = 'mcpManagerReconnect';
 export const Config = z.object({
   /** Dot path to the MCP server map in the selected DSH config entry. */
   mcpConfigPath: z.string().default(''),
@@ -331,16 +333,42 @@ export function apply(ctx, config = {}) {
       };
   }
   const disposeMcpTool = ctx.tools.register(mcpTool);
+  /**
+   * Recreate a native MCP entry. DSH connects a native MCP row once at startup and exposes no reconnect
+   * call, so the only way to retry is to make its config differ: a bookkeeping field is rewritten and the
+   * Loader remounts the row. The server's own fields are preserved verbatim.
+   */
+  async function reconnectNativeMcp(args, exec) {
+    await compatibility.assertWrite('mcp', exec.signal, exec.agent);
+    const entryId = requireString(args.entryId, 'entryId');
+    const rows = ctx.configEditor.configuration();
+    const matches = rows.filter(({ entry }) => entryKeys(entry).includes(entryId));
+    if (matches.length > 1) throw new ManagerError(`多个配置条目匹配 ${entryId}；请使用唯一的条目 id。`);
+    const row = matches[0];
+    if (!row) throw new ManagerError(`没有匹配 ${entryId} 的活动配置条目；可用的条目：${rows.map(({ entry }) => entryKeys(entry)[0]).join(', ') || '无'}`);
+    if (managedMcp.owns(row.entry)) throw new ManagerError('本插件的托管连接请使用「重试加载 MCP」。');
+    if (isRecord(row.inherited) && Object.keys(row.inherited).length) {
+      throw new ManagerError(`条目 ${entryId} 的定义来自继承层（${Object.keys(row.inherited).join(', ')}），重连会改动其来源层，已拒绝。`);
+    }
+    let attempt = 0;
+    exec.signal.throwIfAborted();
+    await ctx.configEditor.edit(row.entry, (current) => {
+      exec.signal.throwIfAborted();
+      if (!isRecord(current)) throw new ManagerError('该条目的配置不是对象，无法重连。');
+      const previous = isRecord(current[reconnectField]) ? current[reconnectField] : {};
+      attempt = (Number.isSafeInteger(previous.attempt) ? previous.attempt : 0) + 1;
+      // Only this bookkeeping field changes, so the row keeps its command, url and credentials.
+      return { ...current, [reconnectField]: { attempt } };
+    });
+    return { reconnected: true, entryId, attempt };
+  }
 
   const skillsTool = tool(
     'dsh_manage_skills',
-    'List and read the effective DSH skill catalog, or register and unregister an in-memory runtime skill for this plugin lifetime.',
+    'List and read the effective DSH skill catalog. Registering or unregistering a Runtime Skill is done only by a person in the MCP & Skills settings page, because it injects instructions every later turn sees.',
     {
-      action: { type: 'string', required: true, enum: ['list', 'get', 'register', 'unregister'] },
-      name: { type: 'string', description: 'Skill name for get, register, or unregister.' },
-      description: { type: 'string' },
-      content: { type: 'string', description: 'Skill body content for register.' },
-      whenToUse: { type: 'string' },
+      action: { type: 'string', required: true, enum: ['list', 'get'] },
+      name: { type: 'string', description: 'Skill name for get.' },
     },
     async (args, exec) => {
       exec.signal.throwIfAborted();
@@ -349,88 +377,90 @@ export function apply(ctx, config = {}) {
         const snapshot = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
         return { action, skills: snapshot.skills, complete: snapshot.complete, scope: exec.agent ? 'agent' : 'profile' };
       }
+      if (action !== 'get') throw new ManagerError('Runtime Skill 的注册与注销只能由人在设置页操作；此工具只提供目录与正文读取。');
       const skillName = requireString(args.name, 'name');
-      if (action === 'register' || action === 'unregister') await compatibility.assertWrite('skills', exec.signal, exec.agent);
-      if (action === 'get') {
+      {
         const skill = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
         return { action, skill: skill ?? null };
       }
-      if (action === 'register') {
-        if (!isSkillName(skillName)) {
-          throw new ManagerError('name must be a kebab-case skill name');
-        }
-        if (runtimeSkills.has(skillName) || pendingSkills.has(skillName)) {
-          throw new ManagerError(`Runtime skill ${skillName} is already registered by this plugin`);
-        }
-        const description = requireString(args.description, 'description');
-        const content = requireNonBlank(args.content, 'content');
-        pendingSkills.add(skillName);
-        let dispose;
-        try {
-          const existing = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
-          exec.signal.throwIfAborted();
-          if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
-          if (!existing.complete) throw new ManagerError('Skill discovery is incomplete; retry before registering a runtime skill');
-          if (existing.skills.some((skill) => skill.name === skillName)) {
-            throw new ManagerError(`Skill ${skillName} already exists in the effective DSH catalog`);
-          }
-          dispose = ctx.skills.register({
-            name: skillName,
-            description,
-            content,
-            source: 'runtime',
-            provider: runtimeProvider,
-            ...(typeof args.whenToUse === 'string' && args.whenToUse.trim() ? { whenToUse: args.whenToUse.trim() } : {}),
-            invocation: { modelInvocable: true, userInvocable: true },
-          });
-          runtimeSkills.set(skillName, dispose);
-          const observed = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
-          if (!observed.complete) throw new ManagerError('Skill discovery is incomplete; runtime registration was rolled back');
-          const registered = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
-          exec.signal.throwIfAborted();
-          if (
-            !registered
-            || registered.source !== 'runtime'
-            || registered.provider !== runtimeProvider
-            || registered.content !== content
-            || registered.description !== description
-          ) {
-            throw new ManagerError(`Skill ${skillName} did not become the effective runtime definition`);
-          }
-          if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
-          return { action, name: skillName, persisted: false };
-        } catch (error) {
-          dispose?.();
-          if (runtimeSkills.get(skillName) === dispose) runtimeSkills.delete(skillName);
-          throw error;
-        } finally {
-          pendingSkills.delete(skillName);
-        }
-      }
-      if (action === 'unregister') {
-        if (pendingSkills.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being registered`);
-        if (pendingUnregister.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being unregistered`);
-        const dispose = runtimeSkills.get(skillName);
-        if (!dispose) return { action, name: skillName, changed: false };
-        pendingUnregister.add(skillName);
-        try {
-          const effective = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
-          exec.signal.throwIfAborted();
-          if (effective?.source !== 'runtime' || effective.provider !== runtimeProvider) {
-            throw new ManagerError(`Skill ${skillName} is no longer the effective runtime definition; refresh the catalog`);
-          }
-          if (runtimeSkills.get(skillName) !== dispose) return { action, name: skillName, changed: false };
-          dispose();
-          runtimeSkills.delete(skillName);
-          return { action, name: skillName, changed: true };
-        } finally {
-          pendingUnregister.delete(skillName);
-        }
-      }
-      throw new ManagerError('action must be list, get, register, or unregister');
     },
   );
   const disposeSkillTool = ctx.tools.register(skillsTool);
+  /** Settings-page-only Runtime Skill writes; the Agent tool cannot reach this. */
+  const skillWrite = async (action, args, exec) => {
+    await compatibility.assertWrite('skills', exec.signal, exec.agent);
+    const skillName = requireString(args.name, 'name');
+    if (action === 'register') {
+      if (!isSkillName(skillName)) {
+        throw new ManagerError('name must be a kebab-case skill name');
+      }
+      if (runtimeSkills.has(skillName) || pendingSkills.has(skillName)) {
+        throw new ManagerError(`Runtime skill ${skillName} is already registered by this plugin`);
+      }
+      const description = requireString(args.description, 'description');
+      const content = requireNonBlank(args.content, 'content');
+      pendingSkills.add(skillName);
+      let dispose;
+      try {
+        const existing = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
+        exec.signal.throwIfAborted();
+        if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
+        if (!existing.complete) throw new ManagerError('Skill discovery is incomplete; retry before registering a runtime skill');
+        if (existing.skills.some((skill) => skill.name === skillName)) {
+          throw new ManagerError(`Skill ${skillName} already exists in the effective DSH catalog`);
+        }
+        dispose = ctx.skills.register({
+          name: skillName,
+          description,
+          content,
+          source: 'runtime',
+          provider: runtimeProvider,
+          ...(typeof args.whenToUse === 'string' && args.whenToUse.trim() ? { whenToUse: args.whenToUse.trim() } : {}),
+          invocation: { modelInvocable: true, userInvocable: true },
+        });
+        runtimeSkills.set(skillName, dispose);
+        const observed = await discovery.serviceFor('skills', exec.agent).snapshot(skillLookup(exec));
+        if (!observed.complete) throw new ManagerError('Skill discovery is incomplete; runtime registration was rolled back');
+        const registered = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
+        exec.signal.throwIfAborted();
+        if (
+          !registered
+          || registered.source !== 'runtime'
+          || registered.provider !== runtimeProvider
+          || registered.content !== content
+          || registered.description !== description
+        ) {
+          throw new ManagerError(`Skill ${skillName} did not become the effective runtime definition`);
+        }
+        if (!active) throw new ManagerError('Plugin unloaded while registering a runtime skill');
+        return { action, name: skillName, persisted: false };
+      } catch (error) {
+        dispose?.();
+        if (runtimeSkills.get(skillName) === dispose) runtimeSkills.delete(skillName);
+        throw error;
+      } finally {
+        pendingSkills.delete(skillName);
+      }
+    }
+    if (pendingSkills.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being registered`);
+    if (pendingUnregister.has(skillName)) throw new ManagerError(`Skill ${skillName} is currently being unregistered`);
+    const dispose = runtimeSkills.get(skillName);
+    if (!dispose) return { action, name: skillName, changed: false };
+    pendingUnregister.add(skillName);
+    try {
+      const effective = await discovery.serviceFor('skills', exec.agent).get(skillName, skillLookup(exec));
+      exec.signal.throwIfAborted();
+      if (effective?.source !== 'runtime' || effective.provider !== runtimeProvider) {
+        throw new ManagerError(`Skill ${skillName} is no longer the effective runtime definition; refresh the catalog`);
+      }
+      if (runtimeSkills.get(skillName) !== dispose) return { action, name: skillName, changed: false };
+      dispose();
+      runtimeSkills.delete(skillName);
+      return { action, name: skillName, changed: true };
+    } finally {
+      pendingUnregister.delete(skillName);
+    }
+  };
   const hooksTool = tool(
     'dsh_manage_hooks',
     'List this Profile’s DSH command Hook rules with their revisions and bridge load status, without command contents. Hook rules are changed only by a person in the MCP & Skills settings page, because enabling one runs commands on this machine.',
@@ -487,6 +517,9 @@ export function apply(ctx, config = {}) {
           break;
         case 'mcp.retry':
           value = await managedMcp.retry(args, signal);
+          break;
+        case 'mcp.reconnect':
+          value = await reconnectNativeMcp(args, exec);
           break;
         case 'mcp.add':
           value = await managedMcp.add(args, signal);
@@ -548,10 +581,10 @@ export function apply(ctx, config = {}) {
           value = { ...value, context: target.context };
           break;
         case 'skills.register':
-          value = await skillsTool.execute({ ...args, action: 'register' }, exec);
+          value = await skillWrite('register', args, exec);
           break;
         case 'skills.unregister':
-          value = await skillsTool.execute({ ...args, action: 'unregister' }, exec);
+          value = await skillWrite('unregister', args, exec);
           break;
         default:
           throw new ManagerError('Unknown mcp-skill-manager RPC method');
@@ -569,9 +602,9 @@ export function apply(ctx, config = {}) {
       };
     }
   };
-  const rpcMethods = ['mcp.retry', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
+  const rpcMethods = ['mcp.retry', 'mcp.reconnect', 'mcp.managed', 'mcp.add', 'compatibility.status', 'contexts.list', 'mcp.discover', 'mcp.catalog', 'mcp.upsert', 'mcp.remove', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister', 'hooks.list', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'];
   /** Enabling a Hook or saving a stdio MCP server runs a command on this machine, so the caller must be the confirming owner session. */
-  const privilegedWriteMethods = new Set(['hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry', 'mcp.add', 'mcp.retry', 'mcp.upsert', 'mcp.remove', 'mcp.managed', 'contexts.list', 'skills.register', 'skills.unregister']);
+  const privilegedWriteMethods = new Set(['hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry', 'mcp.add', 'mcp.retry', 'mcp.reconnect', 'mcp.upsert', 'mcp.remove', 'mcp.managed', 'contexts.list', 'skills.register', 'skills.unregister']);
   const admitPrivilegedWrite = (peer) => {
     if (!isRecord(peer?.principal) || peer.principal.kind !== 'owner') throw new ManagerError('此操作会写入可执行配置；调用方必须是本机所有者会话。');
     if (peer.interactions !== 'answer') throw new ManagerError('此操作会写入可执行配置；需要能够确认操作的本机会话。');

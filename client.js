@@ -334,6 +334,20 @@ function ManagerPage() {
     finally { setNativeBusy(false); setWriteCount((count) => count - 1); }
   }
 
+  /** Recreates a native MCP row by touching a bookkeeping field, which is the only reconnect DSH offers. */
+  async function reconnectNativeMcp(entryId) {
+    if (!canAddNative) return;
+    setNativeBusy(true); setNativeError(""); setNativeNotice("");
+    setWriteCount((count) => count + 1);
+    try {
+      await callHost("mcp.reconnect", { entryId });
+      setNativeNotice("已请求 DSH 重新挂载该 MCP 条目；请稍候刷新工具目录确认是否出现工具。");
+      await new Promise((done) => setTimeout(done, 1500));
+      await Promise.all([refreshRuntime(), refreshManaged()]);
+    } catch (error) { setNativeError(errorText(error)); }
+    finally { setNativeBusy(false); setWriteCount((count) => count - 1); }
+  }
+
   async function addNativeMcp(event) {
     event.preventDefault();
     if (!canAddNative) { setNativeError("请先完成兼容检查，确认配置可写后再添加 MCP。"); return; }
@@ -545,6 +559,11 @@ function ManagerPage() {
     const renderConfig = (row) => h(React.Fragment, null,
       h("div", { className: "dsh-msm-muted" }, sourceLabel(row)),
       row.phase === "failed" ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, row.error || "本地加载失败；请检查命令、环境变量引用和官方 MCP 桥接器。") : null,
+      row.serverName && serverNameCounts.get(row.serverName) === 1 && toolsByServer.get(row.serverName)?.length === 0 && runtimeCatalog?.toolsAvailable
+        ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, "此 Server 已配置但没有任何工具：连接失败、工具拉取失败，或该 Server 本身不提供工具。DSH 不会为此报错，需要重新连接或重启才能恢复。") : null,
+      row.serverName && serverNameCounts.get(row.serverName) === 1 && toolsByServer.get(row.serverName)?.length === 0 && runtimeCatalog?.toolsAvailable && row.entryId
+        && row.kind !== "managed-config"
+        ? h("button", { className: "dsh-msm-button", type: "button", disabled: !canAddNative, onClick: () => void reconnectNativeMcp(row.entryId) }, "重新连接此 MCP") : null,
       row.phase === "failed" && row.serverName && serverNameCounts.get(row.serverName) === 1
         ? h("button", { className: "dsh-msm-button", type: "button", disabled: !canAddNative, onClick: () => void retryNativeMcp(row.serverName) }, "重试加载 MCP") : null,
       h("div", { className: "dsh-msm-muted" }, "插件状态：" + (["等待", "加载中", "已激活", "失败", "已卸载", "卸载中"][row.fiberState] || "未知") + " · 连接状态：未知"));

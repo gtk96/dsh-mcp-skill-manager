@@ -176,10 +176,10 @@ await check('Mismatched Profile response scope produces an explicit page error',
 
 await check('Agent views cannot mutate global config maps or Runtime Skills', async (t) => {
   const host = await fixture(options()); t.after(() => host.close());
-  for (const method of ['mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister']) {
-    const result = await host.rpc(method, { sessionId: 'fixture-B', name: 'fixture', description: 'Fixture', content: 'Fixture' });
-    assert.equal(result.ok, false);
-    assert.ok(result.error.message.includes('Profile global'));
+  for (const method of ['mcp.update', 'skills.register', 'skills.unregister']) {
+    const result = await host.rpc(method, { sessionId: 'fixture-B', entryId: 'include:mcp-probe', patch: { toolCallTimeoutMs: 1000 }, name: 'fixture', description: 'Fixture', content: 'Fixture' });
+    assert.equal(result.ok, false, method);
+    assert.ok(result.error.message.includes('Profile global'), method + ': ' + result.error.message);
   }
   assert.equal(host.trace.edits, 0);
   assert.equal(host.trace.registrations, 0);
@@ -206,34 +206,14 @@ await check('A refresh clears the previous catalog body and rebinds the body to 
   assert.equal(ui.requests.filter((row) => row.method === 'skills.get').length, 2);
 });
 
-await check('Initial MCP discovery displays server groups while managed synchronization is pending and refreshes after it settles', async (t) => {
-  const host = await fixture({ managed: true, managedServers: {
-    broken: { transport: 'streamable-http', url: 'http://fixture.invalid/mcp', headersFromEnv: { 'X-Fixture': 'DSH_MCP_UI_RACE_FIXTURE_UNSET' } },
-  } }); t.after(() => host.close());
-  const discovered = await host.rpc('mcp.discover');
-  assert.equal(discovered.value.configured.find((row) => row.serverName === 'broken').phase, 'failed');
-  let release;
-  const gate = new Promise((done) => { release = done; });
-  const ui = await page(t, host, (method) => method === 'mcp.managed' ? gate : undefined);
-  assert.equal(ui.requests.filter((row) => row.method === 'mcp.discover').length, 1,
-    '托管同步待决时应已请求 Profile MCP 目录');
-  assert.ok(ui.content().includes('MCP Server（1）'), '托管同步待决时应显示分组目录');
-  assert.ok(ui.content().includes('broken（0 个候选工具）'));
-  assert.equal(ui.button('添加托管 MCP').props.disabled, true, '同步完成前托管写入应保持锁定');
-  await act(async () => { release(await host.rpc('mcp.managed')); await tick(); });
-  assert.equal(ui.requests.filter((row) => row.method === 'mcp.discover').length, 2,
-    '托管同步完成后应重新发现 MCP 目录');
-  assert.ok(ui.content().includes('broken（0 个候选工具）'));
-  assert.ok(ui.alerts().some((message) => message.includes('缺少环境变量')));
-});
-
-await check('A delayed main-view projection preserves the user-opened Profile editor', async (t) => {
-  const host = await fixture({ managed: true }); t.after(() => host.close());
+await check('A delayed main-view projection preserves the user-opened MCP editor', async (t) => {
+  const host = await fixture({}); t.after(() => host.close());
+  host.rows.push({ entry: { id: 'include:mcp-probe', options: { id: 'mcp-probe', name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'probe', transport: 'streamable-http', url: 'http://fixture.invalid/mcp', headers: {} } } }, inherited: {}, override: {} });
   const ui = await page(t, host);
-  await ui.click('添加托管 MCP');
-  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
+  await ui.click('编辑此 MCP');
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '编辑 MCP probe' }).length, 1);
   await ui.setSessionRows(projection('fixture-B'));
-  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '新增 MCP' }).length, 1);
+  assert.equal(ui.renderer.root.findAllByProps({ 'aria-label': '编辑 MCP probe' }).length, 1);
   assert.equal(ui.requests.some((row) => row.method === 'contexts.list'), false);
 });
 

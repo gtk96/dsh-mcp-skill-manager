@@ -302,7 +302,7 @@ if (runtimeFixture.version === '0.2.1-rc.2') {
     const host = await fixture({ hooks: true }); t.after(() => host.close());
     const ui = await page(t, host);
     await ui.click('Hooks');
-    assert.ok(ui.content().includes('没有托管 Hook 规则') === false || ui.content().includes('Hook 规则'));
+    assert.ok(ui.content().includes('没有托管 Hook 规则'), 'An empty Profile must be stated explicitly');
     assert.equal(ui.alerts().length, 0, 'The Hooks tab must not report a context or format error');
     await ui.click('新建 Hook 规则');
     await ui.fill({ 'Hook 规则名称': 'probe-hook', 'Hook 命令': 'fixture-hook-command', 'Hook 超时秒数': '12' });

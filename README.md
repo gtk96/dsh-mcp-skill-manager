@@ -46,17 +46,19 @@ Settings 的 **MCP & Skills** 页面直接读取和管理 Profile 全局配置�
 
 ## 编辑 MCP 配置
 
-MCP 页面为每个 Profile 原生 `@deepseek-ai/dsh-mcp-client` 条目提供编辑入口，可改字段：
+MCP 页面为每个 Profile 原生 `@deepseek-ai/dsh-mcp-client` 条目提供编辑入口，页面提供的控件有：
 
-- **stdio**：`command`、`args`、`cwd`、进程环境变量 `env`。
-- **streamable-http**：`url`、请求头 `headers`。
-- **共用**：`toolCallTimeoutMs`、`maxInstructionBytes`、`failOnStartupError`，以及 `reconnect` 的 `enabled`、`initialDelayMs`、`maxDelayMs`、`maxAttempts`。
+- **stdio**：`command`
+- **streamable-http**：`url`
+- **共用**：`toolCallTimeoutMs`、`failOnStartupError`
+
+Host 的 `mcp.update` 契约接受更多字段（stdio 的 `args`、`cwd`、`env`；HTTP 的 `headers`；共用的 `maxInstructionBytes` 与 `reconnect`），但页面尚未为它们提供输入控件。没有对应控件的字段只能通过 RPC 修改。
 
 `serverName` 和 `transport` 不可改。保存调用 `configEditor.edit()`，由 Loader 正常路径校验、持久化并应用；该路径是让 DSH 重建这条连接的唯一正规方式，插件不自行挂载或守护连接。
 
 Profile 配置是唯一真相源。本插件不维护第二份 Server 列表，也不创建或删除条目：`ctx.configEditor` 只提供 `entries`、`configuration` 和 `edit`。新增或删除 MCP Server 请使用 DSH 自身的 MCP 设置。
 
-凭据字段只返回键名，值一律显示 `[configured]`；回写该占位符时保留存储值，填写新值则替换。定义来自继承层的条目只读。
+读取结果对 `env` 与 `headers` 只给键名，不返回值；回写时以 `[configured]` 占位表示保持不变，填写新值则替换。定义来自继承层的条目只读。
 
 `failOnStartupError` 为 `false` 时，官方桥接器连接或工具同步失败也不会报错，条目照常显示为已加载但没有任何工具。官方桥接器在连续重连尝试耗尽后放弃，需要重新加载插件或重启 Host；本页面的保存操作会触发一次配置重新应用，可作为恢复手段之一。
 
@@ -81,11 +83,11 @@ MCP 主页面按 Profile 的 MCP 配置和命名候选工具分组：
 
 写入前拒绝：非 MCP 条目、定义来自继承层、`serverName` 无效、字段越界。保存经 `configEditor.edit()`，只合并本次 patch 涉及的键，条目其余字段保持原值。
 
-`env` 与 `headers` 的读取值为 `[configured]`；回写该占位符视为保持不变，因此页面可以在不回显凭据的前提下保存其他字段。
+读取结果对 `env` 与 `headers` 只返回键名，不返回值；`[configured]` 仅作为回写占位符，表示保留已存值，不是读取输出。因此页面可以在不回显凭据的前提下保存其他字段。
 
 ## Skill 管理
 
-`dsh_manage_skills` 支持目录、正文及本插件生命周期内的 Runtime 注册/注销。目录返回 `complete` 和视图 `scope`；发现未完成或失败不作为已确认的空目录。页面展示 source、provider 和可用的本地路径，不展示远程资源 URL。
+面向 Agent 的 `dsh_manage_skills` 只有 `list` 与 `get`：目录与正文读取。Runtime Skill 的注册与注销只经 Settings 页面的 `skills.register` / `skills.unregister` RPC，因为注册等于向后续每个回合注入模型可见指令。目录返回 `complete` 和视图 `scope`；发现未完成或失败不作为已确认的空目录。页面展示 source、provider 和可用的本地路径，不展示远程资源 URL。
 
 Agent 调用工具时读取其自身作用域与工作目录；页面读取 Profile 全局范围。已有有效同名定义或不完整发现会拒绝注册；正文保留输入中的换行与首尾空白，只拒绝全空白正文。注册后的发现不完整、校验失败或取消会回滚本次注册。注销前会核对有效 Skill 仍为本插件的 Runtime 定义。
 
@@ -110,7 +112,7 @@ pnpm --dir test --ignore-workspace install --ignore-scripts
 node test/run.mjs
 ```
 
-用例覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界、已测/未测/未知版本、接口缺失、状态协议不匹配、Host 写入保护、手动添加表单、同名拒绝、环境引用和增量连接清理。测试使用真实 Cordis/Schemastery 的 volatile 引用更新函数和对应事件，MCP 桥接器是不会执行命令或联网的隔离样本。测试中的 DSH 清单为隔离目录内的合成版本样本，不能作为真实运行时升级或 MCP 传输验收。
+用例覆盖跨会话能力、预设隔离、迟到响应、正文归属、未加载会话、错误边界、已测/未测/未知版本、接口缺失、状态协议不匹配、Host 写入保护、MCP 条目编辑与并发写入合并、Hook 规则生命周期。测试使用真实 Cordis/Schemastery 的 volatile 引用更新函数和对应事件；MCP 与 Hook 桥接器都是不会执行命令或联网的隔离样本。测试中的 DSH 清单为隔离目录内的合成版本样本，不能作为真实运行时升级验收。
 
 测试依赖位于独立的 `test` 包，源码副本和报告位于其忽略目录 `.fixture`。每轮将执行副本与实际源码逐字节比较，记录 SHA256；所有用例和清理结束后写最终报告。隔离测试不替代真实浏览器、对方安装环境或外部 MCP 服务验收。
 

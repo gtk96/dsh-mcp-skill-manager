@@ -143,6 +143,10 @@ export function createMcpConfig(ctx, compatibility) {
   /**
    * Rewrite one MCP entry. `configEditor.edit` persists and applies through the Loader path, so a
    * saved change is what makes DSH rebuild that connection; no parallel connection is kept here.
+   *
+   * Everything that depends on stored values is decided inside the callback: the callback receives the
+   * live config, so a concurrent write between the catalogue read and the save is merged against
+   * current data instead of being overwritten with a stale snapshot.
    */
   async function update(args, exec) {
     await compatibility.assertWrite('mcp', exec.signal, exec.agent);
@@ -152,18 +156,28 @@ export function createMcpConfig(ctx, compatibility) {
     if (record(row.inherited) && Object.keys(row.inherited).length) {
       throw new McpConfigError(`条目 ${args.entryId} 的定义来自继承层（${Object.keys(row.inherited).join(', ')}），此处修改会改动其来源层，已拒绝。`);
     }
-    const current = record(row.entry.options?.config) ? row.entry.options.config : {};
-    if (typeof current.serverName !== 'string' || !serverNamePattern.test(current.serverName)) {
+    const snapshot = record(row.entry.options?.config) ? row.entry.options.config : {};
+    if (typeof snapshot.serverName !== 'string' || !serverNamePattern.test(snapshot.serverName)) {
       throw new McpConfigError('该条目的 serverName 无效，无法安全改写。');
     }
-    const patch = normalizePatch(current, args.patch);
+    // Fail early on an unusable patch; the authoritative merge happens again inside the callback.
+    normalizePatch(snapshot, args.patch);
     exec.signal.throwIfAborted();
-    await ctx.configEditor.edit(row.entry, (live) => {
+    let applied;
+    await ctx.configEditor.edit(row.entry, (live, inherited) => {
       exec.signal.throwIfAborted();
       if (!record(live)) throw new McpConfigError('该条目的配置不是对象，无法修改。');
-      return { ...live, ...patch };
+      if (record(inherited) && Object.keys(inherited).length) {
+        throw new McpConfigError(`条目 ${args.entryId} 的定义来自继承层（${Object.keys(inherited).join(', ')}），此处修改会改动其来源层，已拒绝。`);
+      }
+      if (live.serverName !== snapshot.serverName) {
+        throw new McpConfigError('该条目的 serverName 在修改期间发生变化，请刷新后重试。');
+      }
+      // Merge against the live config so untouched keys keep whatever another writer just stored.
+      applied = normalizePatch(live, args.patch);
+      return { ...live, ...applied };
     });
-    return { changed: true, entryId: args.entryId, serverName: current.serverName, fields: Object.keys(patch) };
+    return { changed: true, entryId: args.entryId, serverName: snapshot.serverName, fields: Object.keys(applied ?? {}) };
   }
 
   return { update };

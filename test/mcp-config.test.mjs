@@ -71,6 +71,45 @@ await check('Editing a native MCP entry needs the confirming owner', async (t) =
   assert.equal(host.trace.edits, 0);
 });
 
+await check('A concurrent write between catalogue read and save is not overwritten', async (t) => {
+  const host = await fixture(); t.after(() => host.close());
+  const row = pushNative(host, httpConfig());
+  const editor = host.ctx.get('configEditor');
+  const original = editor.edit;
+  // Another writer changes credentials and reconnect settings after the catalogue read, before this save lands.
+  editor.edit = async (entry, change) => {
+    entry.options.config = {
+      ...entry.options.config,
+      headers: { 'X-Other-Writer': 'kept' },
+      reconnect: { enabled: true, initialDelayMs: 900, maxDelayMs: 4000, maxAttempts: 7 },
+    };
+    const next = change(structuredClone(entry.options.config), {});
+    host.trace.edits++;
+    entry.options.config = next;
+  };
+  t.after(() => { editor.edit = original; });
+  const result = await host.rpc('mcp.update', { entryId: 'include:mcp-probe', patch: { toolCallTimeoutMs: 60000 } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(row.entry.options.config.headers['X-Other-Writer'], 'kept', 'A concurrent credential write must survive');
+  assert.equal(row.entry.options.config.reconnect.maxAttempts, 7, 'A concurrent reconnect write must survive');
+  assert.equal(row.entry.options.config.toolCallTimeoutMs, 60000);
+});
+
+await check('A save refuses an entry that became inherited before the callback ran', async (t) => {
+  const host = await fixture(); t.after(() => host.close());
+  pushNative(host, httpConfig());
+  const editor = host.ctx.get('configEditor');
+  const original = editor.edit;
+  editor.edit = async (entry, change) => {
+    host.trace.edits++;
+    change(structuredClone(entry.options.config), { url: 'http://inherited.invalid/mcp' });
+  };
+  t.after(() => { editor.edit = original; });
+  const result = await host.rpc('mcp.update', { entryId: 'include:mcp-probe', patch: { toolCallTimeoutMs: 1000 } });
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /继承层/);
+});
+
 await check('The read model exposes editable fields and credential names only', () => {
   const described = describeConfig(stdioConfig());
   assert.equal(described.transport, 'stdio');

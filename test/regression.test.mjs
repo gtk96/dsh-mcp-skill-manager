@@ -318,7 +318,7 @@ async function page(t, host, intercept, sessionRows = {}) {
     },
     alerts() { return renderer.root.findAllByProps({ role: 'alert' }).map(text); },
     content() { return text(renderer.root); },
-    mutations() { return requests.filter(({ method }) => ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method)); },
+    mutations() { return requests.filter(({ method }) => ['mcp.update', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method)); },
   };
 }
 
@@ -498,7 +498,7 @@ await check('Settings shows MCP groups, the empty-Server warning and Skills with
     assert.doesNotMatch(ui.content(), /高级：Profile 配置映射编辑|MCP 映射路径|配置条目|新增自定义映射 Server|替换 override/);
     assert.equal(ui.renderer.root.findAllByProps({ placeholder: 'mcp.servers' }).length, 0);
     assert.equal(ui.button('读取配置'), undefined);
-    assert.equal(ui.requests.some(({ method }) => ['mcp.catalog', 'mcp.upsert', 'mcp.remove'].includes(method)), false);
+    assert.equal(ui.requests.some(({ method }) => ['mcp.update', 'skills.register', 'skills.unregister'].includes(method)), false);
   };
   assertNoMap();
   assert.ok(ui.content().includes('grouped（1 个候选工具）'));

@@ -419,7 +419,6 @@ function ManagerPage() {
     void refreshSkills();
     return () => {
       ++compatibilityRequest.current;
-      ++managedRequest.current;
       ++runtimeRequest.current;
       ++skillRequest.current;
       ++bodyRequest.current;
@@ -535,7 +534,7 @@ function ManagerPage() {
     };
     const renderConfig = (row) => h(React.Fragment, null,
       h("div", { className: "dsh-msm-muted" }, sourceLabel(row)),
-      row.phase === "failed" ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, row.error || "本地加载失败；请检查命令、环境变量引用和官方 MCP 桥接器。") : null,
+      row.fiberState === 3 ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, "该条目的 MCP 客户端加载失败；请检查命令、地址和官方 MCP 桥接器。") : null,
       row.serverName && serverNameCounts.get(row.serverName) === 1 && toolsByServer.get(row.serverName)?.length === 0 && runtimeCatalog?.toolsAvailable
         ? h("div", { className: "dsh-msm-notice dsh-msm-error", role: "alert" }, "此 Server 已配置但没有任何工具：连接失败、工具拉取失败，或该 Server 本身不提供工具。DSH 不会为此报错；可在下方编辑配置并保存以重建连接。") : null,
       row.inherited
@@ -732,6 +731,13 @@ return ManagerPage;
 
 function apply(ctx) {
   const Page = createManagerPage(ctx.connection);
+  // Register the page first: a stylesheet failure must not cost the settings entry itself.
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section",
+    id: "mcp-skill-manager",
+    order: 25,
+    label: "MCP & Skills",
+  }, Page));
   ctx.effect(() => {
     const tag = document.createElement("style");
     tag.dataset.plugin = "dsh-mcp-skill-manager";
@@ -739,12 +745,6 @@ function apply(ctx) {
     document.head.appendChild(tag);
     return () => tag.remove();
   }, "mcp-skill-manager stylesheet");
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
-    name: "settings.section",
-    id: "mcp-skill-manager",
-    order: 25,
-    label: "MCP & Skills",
-  }, Page));
 }
 
 exports.inject = ["slots", "connection"];

@@ -45,3 +45,5 @@ export function apply(ctx, config) {
 }
 `);
 await import(pathToFileURL(resolve(fixture, 'hooks.test.mjs')).href);
+await import(pathToFileURL(resolve(fixture, 'session-discovery.test.mjs')).href);
+await import(pathToFileURL(resolve(fixture, 'compatibility.test.mjs')).href);

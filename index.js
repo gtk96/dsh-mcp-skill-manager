@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import z from '@deepseek-ai/schemastery';
 import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
@@ -99,7 +99,6 @@ function skillLookup(exec) {
 }
 
 export function apply(ctx, config = {}) {
-  const revisionKey = randomBytes(32);
   const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx, discovery.serviceFor);
   const mcpConfig = createMcpConfig(ctx, compatibility);
@@ -258,7 +257,7 @@ export function apply(ctx, config = {}) {
       const args = isRecord(payload) ? payload : {};
       if (args.sessionId !== undefined && typeof args.sessionId !== 'string') throw new ManagerError('sessionId must be a string');
       signal.throwIfAborted();
-      const mutation = ['mcp.retry', 'mcp.add', 'mcp.upsert', 'mcp.remove', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method);
+      const mutation = ['mcp.update', 'skills.register', 'skills.unregister', 'hooks.upsert', 'hooks.set-enabled', 'hooks.remove', 'hooks.retry'].includes(method);
       if (mutation && args.sessionId?.trim()) throw new ManagerError('This operation changes the Profile global configuration or Runtime Skills; select the Profile global view first.');
       const target = method.startsWith('skills.') ? discovery.view(args) : undefined;
       const exec = { signal, agent: target?.agent };

@@ -140,48 +140,53 @@ await check('Unloading the plugin lifts its guard', async (t) => {
   assert.equal(host.guardedCall('mcp__alpha__query'), undefined);
 });
 
-await check('The page lists tools with a call toggle and reports the denial rule', async (t) => {
+await check('The page renders one call switch per tool and explains a guarded tool', async (t) => {
   const host = await fixture(base());
   t.after(() => host.close());
   const ui = await page(t, host);
-  const content = ui.content();
-  assert.ok(content.includes('mcp__alpha__query'), 'Tool names must be listed');
-  assert.ok(content.includes('停用调用'), 'An enabled tool offers the disable action');
-  assert.match(content, /官方 MCP 桥没有提供隐藏单个工具的接口/, 'The page must state what guarding does and does not do');
-  await ui.click('停用调用');
+  assert.ok(ui.content().includes('mcp__alpha__query'), 'Tool names must be listed');
+  assert.deepEqual(ui.switches(), [
+    { tool: 'mcp__alpha__query', allowed: true },
+    { tool: 'mcp__alpha__delete', allowed: true },
+  ], 'Every tool gets one switch, on by default');
+  assert.doesNotMatch(ui.content(), /官方 MCP 桥没有提供隐藏单个工具的接口/,
+    'An untouched server carries no caveat copy');
+  await ui.toggleSwitch('mcp__alpha__query');
   const [sent] = ui.mutations().filter(({ method }) => method === 'mcp.set-tool-disabled');
   assert.ok(sent, 'mcp.set-tool-disabled must be sent');
   assert.equal(sent.args.toolName, 'mcp__alpha__query');
   assert.equal(sent.args.disabled, true);
   assert.match(ui.statuses().join(' '), /已停用该工具的调用/);
-  assert.ok(ui.content().includes('恢复调用'), 'The row now offers the inverse action');
-  assert.match(ui.content(), /已停用调用/, 'The guarded row is marked');
+  assert.deepEqual(ui.switches().map(({ allowed }) => allowed), [false, true],
+    'Only the clicked tool switches off');
+  assert.match(ui.content(), /官方 MCP 桥没有提供隐藏单个工具的接口/,
+    'The caveat appears once something is guarded');
   assert.equal(ui.logged.length, 0);
 });
 
-await check('The page hides the call toggle when the runtime publishes no guard', async (t) => {
+await check('The page hides the call switches when the runtime publishes no guard', async (t) => {
   const host = await fixture(base({ guardAPI: false }));
   t.after(() => host.close());
   const ui = await page(t, host);
-  assert.equal(ui.button('停用调用'), undefined);
+  assert.equal(ui.switches().length, 0);
   assert.match(ui.content(), /tools\.guard/);
   assert.equal(ui.mutations().length, 0);
 });
 
-await check('A tool guarded before the page loads renders as already disabled', async (t) => {
+await check('A tool guarded before the page loads renders as already switched off', async (t) => {
   const host = await fixture(base());
   t.after(() => host.close());
   assert.equal((await host.rpc('mcp.set-tool-disabled', { toolName: 'mcp__alpha__query', disabled: true })).ok, true);
   const ui = await page(t, host);
-  assert.match(ui.content(), /已停用调用/);
-  // The guarded tool offers the inverse action; its unguarded sibling keeps the disabling one.
+  assert.match(ui.content(), /1 个已停用/);
+  // The guarded tool reads as off; its unguarded sibling stays on.
+  assert.deepEqual(ui.switches(), [
+    { tool: 'mcp__alpha__query', allowed: false },
+    { tool: 'mcp__alpha__delete', allowed: true },
+  ]);
   const rows = ui.renderer.root.findAll((node) => node.type === 'li'
     && node.props.className?.includes('dsh-msm-tool'));
-  const labelsFor = (tool) => {
-    const row = rows.find((node) => text(node).startsWith(tool));
-    assert.ok(row, 'Expected a row for ' + tool);
-    return row.findAllByType('button').map((button) => button.children.filter((child) => typeof child === 'string').join(''));
-  };
-  assert.deepEqual(labelsFor('mcp__alpha__query'), ['恢复调用']);
-  assert.deepEqual(labelsFor('mcp__alpha__delete'), ['停用调用']);
+  const off = rows.filter((row) => row.props.className.includes('dsh-msm-tool-off'));
+  assert.equal(off.length, 1, 'Exactly one tool row is dimmed');
+  assert.match(text(off[0]), /mcp__alpha__query/);
 });

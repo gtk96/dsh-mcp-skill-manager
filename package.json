@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-skill-manager",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "DeepSeek Harness plugin for managing MCP servers and runtime skills",
   "type": "module",
   "main": "./index.js",

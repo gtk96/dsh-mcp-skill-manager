@@ -45,11 +45,8 @@ const zh = {
   "mcp.duplicate": "多个 Server 使用了相同名称：{names}。它们的工具无法归属。",
   "mcp.enableFirst": "先启用再编辑。",
   "mcp.notLoaded": "该条目未加载，无法编辑。",
-  "mcp.toolGuarded": "已停用调用",
-  "mcp.toolGuardOn": "停用调用",
-  "mcp.toolGuardOff": "恢复调用",
   "mcp.toolGuardHint": "停用后模型仍能看到这个工具，但调用会被拒绝。官方 MCP 桥没有提供隐藏单个工具的接口。",
-  "mcp.guardedCount": "{count} 个工具已停用调用",
+  "mcp.guardedCount": "{count} 个已停用",
   "notice.toolGuarded": "已停用该工具的调用。",
   "notice.toolUnguarded": "已恢复该工具的调用。",
   "write.guardsMissing": "当前 DSH 未提供 tools.guard，无法停用单个工具。",
@@ -167,11 +164,8 @@ const en = {
   "mcp.duplicate": "Several servers share the same name: {names}. Their tools cannot be attributed.",
   "mcp.enableFirst": "Enable it before editing.",
   "mcp.notLoaded": "This entry is not loaded, so it cannot be edited.",
-  "mcp.toolGuarded": "Calls disabled",
-  "mcp.toolGuardOn": "Disable calls",
-  "mcp.toolGuardOff": "Allow calls",
   "mcp.toolGuardHint": "A guarded tool stays in the model's catalog, but every call is denied. The official MCP bridge offers no way to hide a single tool.",
-  "mcp.guardedCount": "{count} tool(s) with calls disabled",
+  "mcp.guardedCount": "{count} disabled",
   "notice.toolGuarded": "Calls to this tool are disabled.",
   "notice.toolUnguarded": "Calls to this tool are allowed again.",
   "write.guardsMissing": "This DSH provides no tools.guard, so a single tool cannot be disabled.",
@@ -278,12 +272,19 @@ const css = `
 .dsh-msm-note-ok{color:var(--dsw-alias-state-success-primary,#18864b);}
 .dsh-msm-list{display:flex;flex-direction:column;gap:8px;}
 .dsh-msm-empty{border:1px dashed var(--dsw-alias-border-l2,#cfd5dd);border-radius:8px;padding:14px;color:var(--dsw-alias-label-secondary,#59636e);font-size:13px;}
-.dsh-msm-tools{border-top:1px solid var(--dsw-alias-border-l1,#d9dde3);padding-top:6px;}
+.dsh-msm-tools{border-top:1px solid var(--dsw-alias-border-l1,#d9dde3);padding-top:8px;}
 .dsh-msm-tools summary{cursor:pointer;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;}
-.dsh-msm-tool-list{margin:6px 0 0;padding-left:18px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
-.dsh-msm-tool{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dsh-msm-tool-list{display:flex;flex-direction:column;gap:2px;margin:8px 0 0;padding:0;list-style:none;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;overflow-wrap:anywhere;}
+.dsh-msm-tool{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:26px;}
 .dsh-msm-tool-name{overflow-wrap:anywhere;}
-.dsh-msm-tool-guarded .dsh-msm-tool-name{text-decoration:line-through;opacity:.7;}
+.dsh-msm-tool-off .dsh-msm-tool-name{color:var(--dsw-alias-label-tertiary,#8a929c);}
+.dsh-msm-switch{position:relative;flex:0 0 auto;width:32px;height:18px;border:0;border-radius:999px;background:var(--dsw-alias-border-l2,#cfd5dd);cursor:pointer;padding:0;transition:background-color .15s;}
+.dsh-msm-switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s;}
+.dsh-msm-switch[aria-checked="true"]{background:var(--dsw-alias-brand-primary,#4677f5);}
+.dsh-msm-switch[aria-checked="true"]::after{left:16px;}
+.dsh-msm-switch:disabled{cursor:not-allowed;opacity:.5;}
+.dsh-msm-switch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4677f5);outline-offset:2px;}
+.dsh-msm-tools-hint{margin:8px 0 0;color:var(--dsw-alias-label-tertiary,#8a929c);font-size:11px;line-height:1.5;}
 .dsh-msm-form{display:flex;flex-direction:column;gap:10px;}
 .dsh-msm-form-title{margin:0;font-size:15px;font-weight:600;}
 .dsh-msm-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
@@ -870,20 +871,21 @@ function createManagerPage(connection) {
     }
 
     function renderTool(tool) {
-      const on = guarded.has(tool);
-      const label = on ? t("mcp.toolGuardOff") : t("mcp.toolGuardOn");
-      return h("li", { className: "dsh-msm-tool" + (on ? " dsh-msm-tool-guarded" : ""), key: tool },
+      // The switch reads as "this tool may be called"; a guarded tool keeps its schema but every call is denied.
+      const allowed = !guarded.has(tool);
+      return h("li", { className: "dsh-msm-tool" + (allowed ? "" : " dsh-msm-tool-off"), key: tool },
         h("span", { className: "dsh-msm-tool-name" }, tool),
-        on ? h("span", { className: "dsh-msm-tag dsh-msm-tag-warn" }, t("mcp.toolGuarded")) : null,
         canWriteGuards
           ? h("button", {
-            className: "dsh-msm-btn dsh-msm-link",
+            className: "dsh-msm-switch",
             type: "button",
+            role: "switch",
+            "aria-checked": allowed,
+            "aria-label": tool,
             title: t("mcp.toolGuardHint"),
-            "aria-label": label + " " + tool,
             disabled: locked,
             onClick: () => toggleTool(tool),
-          }, label)
+          })
           : null);
     }
 
@@ -931,7 +933,9 @@ function createManagerPage(connection) {
             server.guardedCount ? " · " + t("mcp.guardedCount", { count: server.guardedCount }) : ""),
           Array.isArray(server.tools) && server.tools.length
             ? h("ul", { className: "dsh-msm-tool-list" }, server.tools.map(renderTool))
-            : h("div", { className: "dsh-msm-muted" }, server.disabled ? t("state.disabled") : t("mcp.noTools"))));
+            : h("div", { className: "dsh-msm-muted" }, server.disabled ? t("state.disabled") : t("mcp.noTools")),
+          // Explained only where it applies, so an untouched server card stays quiet.
+          server.guardedCount ? h("p", { className: "dsh-msm-tools-hint" }, t("mcp.toolGuardHint")) : null));
     }
 
     function renderCredential(row, index) {
@@ -1139,7 +1143,6 @@ function createManagerPage(connection) {
             h("summary", null, t("mcp.ungrouped", { count: ungrouped.length })),
             h("ul", { className: "dsh-msm-tool-list" }, ungrouped.map((tool) => h("li", { key: tool }, tool))))
           : null,
-        canWriteGuards ? h("div", { className: "dsh-msm-muted" }, t("mcp.toolGuardHint")) : null,
         h("div", { className: "dsh-msm-muted" }, t("mcp.footnote")));
     }
 

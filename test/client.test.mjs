@@ -74,8 +74,8 @@ await check('A bundled server offers edit and disable but no delete', async (t) 
   const host = await fixture(servers());
   t.after(() => host.close());
   const ui = await page(t, host);
-  // The guarded-tool control sits inside the card because the tool list is part of that card.
-  assert.deepEqual(labels(card(ui, 'bundled')), ['编辑', '禁用', '停用调用']);
+  // Per-tool call switches are icon-only controls, so the card's text buttons stay the server actions.
+  assert.deepEqual(labels(card(ui, 'bundled')), ['编辑', '禁用']);
   assert.deepEqual(labels(card(ui, 'broken')), ['编辑', '禁用'], 'A failed row is still toggleable, never editable');
 });
 

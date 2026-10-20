@@ -32,15 +32,21 @@ export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
       : testedRuntimeVersions.includes(runtimeVersion) ? 'tested' : 'unverified';
     const configEditor = ctx.get('configEditor');
     const skills = ctx.get('skills');
+    const tools = ctx.get('tools');
     const capabilities = {
       mcpCatalog: hasMethods(configEditor, ['configuration']),
       configEdit: hasMethods(configEditor, ['configuration', 'edit']),
       runtimeSkills: hasMethods(skills, ['snapshot', 'get', 'register']),
       patchWrite: typeof ctx.get('profileContext')?.patchPath === 'string',
+      // A profile directory is where the deny list persists; without one the guard would forget on restart.
+      toolGuard: hasMethods(tools, ['guard']) && typeof ctx.get('profileContext')?.dir === 'string',
+      toolGuardState: typeof ctx.get('profileContext')?.dir === 'string',
     };
     const tested = versionStatus === 'tested';
     const writes = {
       mcp: tested && capabilities.configEdit && capabilities.patchWrite,
+      // The guard is a public `tools` method, so it needs no config editor — only the tested version and a profile.
+      guards: tested && capabilities.toolGuard,
       skills: tested && capabilities.runtimeSkills,
     };
     const reason = versionStatus === 'unknown' ? '无法识别 DSH 运行版本'
@@ -64,7 +70,10 @@ export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
     const status = await report();
     signal?.throwIfAborted();
     if (!status.writes[kind]) {
-      const specific = kind === 'skills' && status.reason === null ? '缺少 Runtime Skill 接口' : status.reason;
+      const specific = kind === 'skills' && status.reason === null ? '缺少 Runtime Skill 接口'
+        : kind === 'guards' && status.reason === null
+          ? status.capabilities.toolGuard ? '该 Profile 目录不可写，停用状态无法保存' : '当前 DSH 未提供 tools.guard 接口'
+          : status.reason;
       throw new CompatibilityError(`${specific ?? '当前 DSH 版本不允许写入'}；操作已阻止。`);
     }
   }

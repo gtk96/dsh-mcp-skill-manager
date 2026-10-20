@@ -8,6 +8,7 @@ DeepSeek Harness（DSH）插件：在 **Settings → MCP & Skills** 里新增、
 
 - **MCP Server**：新增、编辑、删除、启用/禁用；stdio 与 streamable-http 两种传输的完整字段。
 - **工具目录**：按 `mcp__<serverName>__` 前缀把工具归到对应 Server；配置了但没有返回工具的 Server 会单独提示。
+- **单个工具停用调用**：对任意 MCP 工具关闭调用，其它工具不受影响（见「停用单个工具」）。
 - **Runtime Skill**：列出、查看正文、注册、注销；仅在插件运行期间有效。
 - **中英双语**：接入 DSH 的 locale 服务，跟随设置里的语言切换；没有 locale 服务时使用内置中文。
 
@@ -46,6 +47,20 @@ dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-ma
 
 `serverName` 与条目 id 在创建前对**所有** MCP 行查重（含已禁用和上层来源）；id 冲突会自动加数字后缀。
 
+## 停用单个工具
+
+官方 `@deepseek-ai/dsh-mcp-client` 的配置里**没有**工具白名单/黑名单字段，它在 `tools/list` 之后无条件注册每个工具，所以「让某个工具从模型目录里消失」在桥层面做不到。
+
+本插件用的是官方提供的另一个口子 —— `ctx.tools.guard()`：
+
+- 命中的工具在**执行前**被拒绝，返回 `Error: Tool "<name>" is disabled for calls by the user ...`，并明确要求模型不要重试。
+- **工具仍然出现在模型目录里**（schema 照常下发），因为反注册属于官方桥的所有权，本插件无法拿走。
+- guard 挂在 Profile 层，对所有 Agent 生效；插件卸载即解除。
+
+开关状态存在 `<profile>/.mcp-skill-manager/tool-guards.json`，**不写进 `cordis.patch.yml`**：写 patch 会触发 Loader reconcile，每点一次开关都会重新加载本插件（页面会闪断）。点目录不在 HMR 的监视范围内，也不会被组合进 Loader。
+
+若运行时不提供 `tools.guard`，页面不显示这些开关，`compatibility.status` 的 `writes.guards` 为 `false`。
+
 ## 兼容性
 
 - 运行版本只从 `@deepseek-ai/dsh/package.json` 读取，不访问网络。
@@ -55,6 +70,7 @@ dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-ma
 ## 已知限制
 
 - **没有连接状态**：官方 MCP 桥不暴露连接状态。页面只展示 DSH 实际注册的工具；「已配置但没有返回工具」是静默失败唯一可见的症状。
+- **停用工具 ≠ 隐藏工具**：见上一节。模型仍会看到被停用的工具，尝试调用后收到拒绝原因。
 - **Runtime Skill 不持久化**：插件停止运行即失效；持久化 Skill 文件不属于本插件能力。
 - **预设内的 MCP 行不在此页管理**：它们是 Agent 预设的一部分，归属该预设。
 - **`!!js` 字段**：命令、参数、URL、目录等字段若是 YAML 表达式，页面只读展示，不解析、不重写。
@@ -62,7 +78,7 @@ dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-ma
 
 ## 安全边界
 
-会改动可执行配置或注入模型可见指令的操作（MCP 写入、Runtime Skill 注册/注销）只接受**本机确认中的所有者会话**；其它调用方得到 `MCP_SKILL_MANAGER_FORBIDDEN`。面向 Agent 的两个工具（`dsh_manage_mcp_servers`、`dsh_manage_skills`）只读。
+会改动可执行配置或注入模型可见指令的操作（MCP 写入、工具停用、Runtime Skill 注册/注销）只接受**本机确认中的所有者会话**；其它调用方得到 `MCP_SKILL_MANAGER_FORBIDDEN`。面向 Agent 的两个工具（`dsh_manage_mcp_servers`、`dsh_manage_skills`）只读。
 
 ## RPC
 
@@ -71,9 +87,10 @@ Client 用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)
 | 方法 | 作用 |
 | --- | --- |
 | `compatibility.status` | 版本、能力、写入许可 |
-| `mcp.discover` | Server 列表、工具分组、未归属工具 |
+| `mcp.discover` | Server 列表、工具分组、未归属工具、已停用工具 |
 | `mcp.create` / `mcp.update` / `mcp.reset` | 新增 / 编辑 / 重置为默认 |
 | `mcp.remove` / `mcp.set-enabled` | 删除（或禁用）/ 启用禁用 |
+| `mcp.set-tool-disabled` | 停用或恢复单个 MCP 工具的调用 |
 | `skills.list` / `skills.get` | Skill 目录与正文 |
 | `skills.register` / `skills.unregister` | Runtime Skill 注册与注销 |
 

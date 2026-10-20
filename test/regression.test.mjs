@@ -33,7 +33,7 @@ const mark = (message) => appendFileSync(progress, message + '\n');
 const sources = [
   ['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'],
   ['compatibility.js', 'compatibility.js'], ['mcp-config.js', 'mcp-config.js'],
-  ['mcp-patch.js', 'mcp-patch.js'], ['mcp-write.js', 'mcp-write.js'], ['package.json', 'package.json'],
+  ['mcp-patch.js', 'mcp-patch.js'], ['mcp-write.js', 'mcp-write.js'], ['tool-guards.js', 'tool-guards.js'], ['package.json', 'package.json'],
 ];
 const hashes = {};
 for (const [fixture, source] of sources) {
@@ -175,7 +175,7 @@ function setConfigOverride(document, entryId, name, next, inherited) {
 }
 
 function createProfile(options = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-msm-'));
+  const dir = options.profileDir ?? mkdtempSync(join(tmpdir(), 'dsh-msm-'));
   const patchPath = join(dir, 'cordis.patch.yml');
   writeFileSync(patchPath, options.patch ?? '[]\n');
   const base = clone(options.base ?? []);
@@ -341,7 +341,8 @@ async function fixture(options = {}) {
   ctx.reflect.provide('configEditor', profile.configEditor);
   if (options.hmr !== false) ctx.reflect.provide('hmr', profile.hmr);
   ctx.reflect.provide('skills', skills);
-  ctx.reflect.provide('tools', {
+  const guards = new Map();
+  const toolsService = {
     register(tool) {
       assert.equal(tools.has(tool.name), false, 'Tools must not register twice');
       tools.set(tool.name, tool);
@@ -353,7 +354,24 @@ async function fixture(options = {}) {
       return [...tools.values(), ...(scoped ?? options.globalTools ?? [])].map(({ name }) => ({ name, description: 'Fixture tool', parameters: { type: 'object' } }));
     },
     get(name) { return tools.get(name); },
-  });
+    // Mirrors `ToolRuntime.guard`: a plain-context guard applies to every agent, first reason wins.
+    guard(fn) {
+      const id = Symbol('guard');
+      guards.set(id, fn);
+      trace.guardRegistrations = (trace.guardRegistrations ?? 0) + 1;
+      return () => { guards.delete(id); };
+    },
+    /** Run the registered guards for one call, the way the harness does before a tool body. */
+    guardedCall(name) {
+      for (const fn of guards.values()) {
+        const reason = fn({ name });
+        if (reason !== undefined) return reason;
+      }
+      return undefined;
+    },
+  };
+  if (options.guardAPI === false) delete toolsService.guard;
+  ctx.reflect.provide('tools', toolsService);
 
   let removeConnection;
   if (options.web !== false) removeConnection = ctx.reflect.provide('connection', connection);
@@ -380,7 +398,7 @@ async function fixture(options = {}) {
   };
 
   return {
-    ctx, fiber, tools, routes, runtime, trace, profile, skills, connection, call, rpc,
+    ctx, fiber, tools, routes, runtime, trace, profile, skills, connection, call, rpc, guardedCall: toolsService.guardedCall,
     async attachWeb() { removeConnection = ctx.reflect.provide('connection', connection); await flush(); },
     async detachWeb() { if (removeConnection) { await removeConnection(); removeConnection = undefined; } await flush(); },
     async close() { await fiber.dispose(); await fiber.await(); },
@@ -521,7 +539,7 @@ async function page(t, host, options = {}) {
     statuses() { return renderer.root.findAllByProps({ role: "status" }).map(text); },
     content() { return text(renderer.root); },
     mutations() {
-      return requests.filter(({ method }) => ["mcp.create", "mcp.update", "mcp.reset", "mcp.remove", "mcp.set-enabled", "skills.register", "skills.unregister"].includes(method));
+      return requests.filter(({ method }) => ["mcp.create", "mcp.update", "mcp.reset", "mcp.remove", "mcp.set-enabled", "mcp.set-tool-disabled", "skills.register", "skills.unregister"].includes(method));
     },
   };
   return helpers;

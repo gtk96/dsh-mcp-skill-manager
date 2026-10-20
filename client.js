@@ -45,6 +45,14 @@ const zh = {
   "mcp.duplicate": "多个 Server 使用了相同名称：{names}。它们的工具无法归属。",
   "mcp.enableFirst": "先启用再编辑。",
   "mcp.notLoaded": "该条目未加载，无法编辑。",
+  "mcp.toolGuarded": "已停用调用",
+  "mcp.toolGuardOn": "停用调用",
+  "mcp.toolGuardOff": "恢复调用",
+  "mcp.toolGuardHint": "停用后模型仍能看到这个工具，但调用会被拒绝。官方 MCP 桥没有提供隐藏单个工具的接口。",
+  "mcp.guardedCount": "{count} 个工具已停用调用",
+  "notice.toolGuarded": "已停用该工具的调用。",
+  "notice.toolUnguarded": "已恢复该工具的调用。",
+  "write.guardsMissing": "当前 DSH 未提供 tools.guard，无法停用单个工具。",
   "mcp.footnote": "变更写入本 Profile 的配置文件；上层配置只能在提供它的插件包里修改。",
   "notice.applied": "已保存并生效。",
   "notice.appliedSuffix": "，已生效。",
@@ -159,6 +167,14 @@ const en = {
   "mcp.duplicate": "Several servers share the same name: {names}. Their tools cannot be attributed.",
   "mcp.enableFirst": "Enable it before editing.",
   "mcp.notLoaded": "This entry is not loaded, so it cannot be edited.",
+  "mcp.toolGuarded": "Calls disabled",
+  "mcp.toolGuardOn": "Disable calls",
+  "mcp.toolGuardOff": "Allow calls",
+  "mcp.toolGuardHint": "A guarded tool stays in the model's catalog, but every call is denied. The official MCP bridge offers no way to hide a single tool.",
+  "mcp.guardedCount": "{count} tool(s) with calls disabled",
+  "notice.toolGuarded": "Calls to this tool are disabled.",
+  "notice.toolUnguarded": "Calls to this tool are allowed again.",
+  "write.guardsMissing": "This DSH provides no tools.guard, so a single tool cannot be disabled.",
   "mcp.footnote": "Changes are written to this profile's configuration; upper-layer entries can only be changed in the bundle that provides them.",
   "notice.applied": "Saved and applied.",
   "notice.appliedSuffix": "; it is active.",
@@ -265,6 +281,9 @@ const css = `
 .dsh-msm-tools{border-top:1px solid var(--dsw-alias-border-l1,#d9dde3);padding-top:6px;}
 .dsh-msm-tools summary{cursor:pointer;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;}
 .dsh-msm-tool-list{margin:6px 0 0;padding-left:18px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
+.dsh-msm-tool{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dsh-msm-tool-name{overflow-wrap:anywhere;}
+.dsh-msm-tool-guarded .dsh-msm-tool-name{text-decoration:line-through;opacity:.7;}
 .dsh-msm-form{display:flex;flex-direction:column;gap:10px;}
 .dsh-msm-form-title{margin:0;font-size:15px;font-weight:600;}
 .dsh-msm-field{display:flex;flex-direction:column;gap:4px;min-width:0;}
@@ -527,6 +546,7 @@ function createManagerPage(connection) {
     const [toolsAvailable, setToolsAvailable] = React.useState(true);
     const [ungrouped, setUngrouped] = React.useState([]);
     const [duplicates, setDuplicates] = React.useState([]);
+    const [guarded, setGuarded] = React.useState(new Set());
     const [skills, setSkills] = React.useState(null);
     const [skillsComplete, setSkillsComplete] = React.useState(true);
     const [busy, setBusy] = React.useState("load");
@@ -542,6 +562,7 @@ function createManagerPage(connection) {
     const sequence = React.useRef(0);
     const locked = busy !== null;
     const canWriteMcp = status?.writes?.mcp === true;
+    const canWriteGuards = status?.writes?.guards === true;
     const canWriteSkills = status?.writes?.skills === true;
 
     React.useEffect(() => {
@@ -586,6 +607,7 @@ function createManagerPage(connection) {
       setToolsAvailable(value.toolsAvailable !== false);
       setUngrouped(Array.isArray(value.ungrouped) ? value.ungrouped : []);
       setDuplicates(Array.isArray(value.duplicateServerNames) ? value.duplicateServerNames : []);
+      setGuarded(new Set(Array.isArray(value.guardedTools) ? value.guardedTools : []));
     }
 
     async function reloadMcp() {
@@ -804,9 +826,26 @@ function createManagerPage(connection) {
       });
     }
 
+    function toggleTool(toolName) {
+      if (locked || !canWriteGuards) return;
+      const disable = !guarded.has(toolName);
+      void run("tool:" + toolName, async () => {
+        await requestHost("mcp.set-tool-disabled", { toolName, disabled: disable });
+        setGuarded((current) => {
+          const next = new Set(current);
+          if (disable) next.add(toolName);
+          else next.delete(toolName);
+          return next;
+        });
+        setNotice(t(disable ? "notice.toolGuarded" : "notice.toolUnguarded"));
+        await reloadMcp();
+      });
+    }
+
     function statusNotice() {
       if (status === null) return null;
-      if (canWriteMcp && canWriteSkills) return null;
+      // `guards` also rides on a tested version, so its absence is reported beside the others.
+      if (canWriteMcp && canWriteSkills && canWriteGuards) return null;
       const missing = Object.entries(status.capabilities ?? {})
         .filter(([, available]) => available !== true)
         .map(([name]) => name);
@@ -816,6 +855,7 @@ function createManagerPage(connection) {
         h("div", { className: "dsh-msm-muted" }, t("write.plugin", { version: status.pluginVersion ?? "?" })),
         h("div", { className: "dsh-msm-muted" }, t("write.tested", { versions: (status.testedRuntimeVersions ?? []).join(", ") || "—" })),
         missing.length ? h("div", { className: "dsh-msm-muted" }, t("write.missing", { names: missing.join(", ") })) : null,
+        !canWriteGuards && status.capabilities?.toolGuard === false ? h("div", { className: "dsh-msm-muted" }, t("write.guardsMissing")) : null,
         status.reason ? h("div", { className: "dsh-msm-muted" }, status.reason) : null);
     }
 
@@ -827,6 +867,24 @@ function createManagerPage(connection) {
         "aria-selected": tab === id,
         onClick: () => setTab(id),
       }, label, h("span", { className: "dsh-msm-count" }, String(count)));
+    }
+
+    function renderTool(tool) {
+      const on = guarded.has(tool);
+      const label = on ? t("mcp.toolGuardOff") : t("mcp.toolGuardOn");
+      return h("li", { className: "dsh-msm-tool" + (on ? " dsh-msm-tool-guarded" : ""), key: tool },
+        h("span", { className: "dsh-msm-tool-name" }, tool),
+        on ? h("span", { className: "dsh-msm-tag dsh-msm-tag-warn" }, t("mcp.toolGuarded")) : null,
+        canWriteGuards
+          ? h("button", {
+            className: "dsh-msm-btn dsh-msm-link",
+            type: "button",
+            title: t("mcp.toolGuardHint"),
+            "aria-label": label + " " + tool,
+            disabled: locked,
+            onClick: () => toggleTool(tool),
+          }, label)
+          : null);
     }
 
     function renderServer(server) {
@@ -869,9 +927,10 @@ function createManagerPage(connection) {
         server.loadFailed ? h("div", { className: "dsh-msm-note dsh-msm-note-error", role: "alert" }, t("mcp.loadFailed")) : null,
         server.empty ? h("div", { className: "dsh-msm-note" }, t("mcp.noTools")) : null,
         h("details", { className: "dsh-msm-tools" },
-          h("summary", null, t("mcp.tools", { count })),
+          h("summary", null, t("mcp.tools", { count }),
+            server.guardedCount ? " · " + t("mcp.guardedCount", { count: server.guardedCount }) : ""),
           Array.isArray(server.tools) && server.tools.length
-            ? h("ul", { className: "dsh-msm-tool-list" }, server.tools.map((tool) => h("li", { key: tool }, tool)))
+            ? h("ul", { className: "dsh-msm-tool-list" }, server.tools.map(renderTool))
             : h("div", { className: "dsh-msm-muted" }, server.disabled ? t("state.disabled") : t("mcp.noTools"))));
     }
 
@@ -1080,6 +1139,7 @@ function createManagerPage(connection) {
             h("summary", null, t("mcp.ungrouped", { count: ungrouped.length })),
             h("ul", { className: "dsh-msm-tool-list" }, ungrouped.map((tool) => h("li", { key: tool }, tool))))
           : null,
+        canWriteGuards ? h("div", { className: "dsh-msm-muted" }, t("mcp.toolGuardHint")) : null,
         h("div", { className: "dsh-msm-muted" }, t("mcp.footnote")));
     }
 

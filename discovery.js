@@ -37,7 +37,7 @@ function summarize(config, transport) {
   }
 }
 
-export function createDiscovery(ctx) {
+export function createDiscovery(ctx, toolGuards) {
   const optional = (name) => ctx.get(name);
 
   /** Ids this profile's own patch file inserts. */
@@ -129,7 +129,7 @@ export function createDiscovery(ctx) {
     for (const server of servers) {
       if (server.serverName) counts.set(server.serverName, (counts.get(server.serverName) ?? 0) + 1);
     }
-    const tools = [];
+    const listed = [];
     for (const server of servers) {
       const unique = server.serverName !== null && counts.get(server.serverName) === 1;
       const prefix = unique ? `mcp__${server.serverName}__` : undefined;
@@ -137,12 +137,15 @@ export function createDiscovery(ctx) {
       server.toolCount = server.tools.length;
       // A server that returns no tools while its siblings do is the only symptom the bridge exposes.
       server.empty = available && !server.disabled && server.serverName !== null && unique && server.tools.length === 0;
-      tools.push(...server.tools);
+      server.guardedCount = server.tools.filter((name) => toolGuards?.has(name) === true).length;
+      listed.push(...server.tools);
     }
-    const grouped = new Set(tools);
+    const grouped = new Set(listed);
     return {
       toolsAvailable: available,
       servers,
+      // Public names whose calls the guard denies; the page marks the matching rows.
+      guardedTools: toolGuards?.names() ?? [],
       ungrouped: candidates.filter((name) => !grouped.has(name)),
       duplicateServerNames: [...counts].filter(([, count]) => count > 1).map(([serverName]) => serverName),
     };

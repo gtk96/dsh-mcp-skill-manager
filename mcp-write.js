@@ -112,6 +112,16 @@ async function atomicWrite() {
   return atomicWriteModule;
 }
 
+/**
+ * Write one file atomically with the same helper the patch uses; other modules own their own locks.
+ * @param {string} filename Target path.
+ * @param {string} text Contents.
+ */
+export async function writeTextAtomic(filename, text) {
+  const { writeFileAtomic } = await atomicWrite();
+  await writeFileAtomic(filename, text, { mode: 0o600 });
+}
+
 function readTextOrEmpty(filename) {
   try {
     return readFileSync(filename, 'utf8');

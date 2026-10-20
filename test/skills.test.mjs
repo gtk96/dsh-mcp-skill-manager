@@ -8,8 +8,8 @@ await check('Host registers both tools and every settings route using real Cordi
   t.after(() => host.close());
   assert.equal(host.fiber.state, 2);
   assert.deepEqual([...host.tools.keys()].sort(), ['dsh_manage_mcp_servers', 'dsh_manage_skills']);
-  assert.equal(host.routes.size, 11);
-  for (const method of ['mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled']) {
+  assert.equal(host.routes.size, 12);
+  for (const method of ['mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled', 'mcp.set-tool-disabled']) {
     assert.ok(host.routes.has('/api/mcp-skill-manager.' + method), method);
   }
   assert.equal(host.routes.has('/api/mcp-skill-manager.hooks.list'), false, 'The Hook surface is gone');
@@ -19,12 +19,12 @@ await check('Web arrival and removal do not stop Host tools or leak routes', asy
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 11);
+  assert.equal(host.routes.size, 12);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 2);
   await host.attachWeb();
-  assert.equal(host.routes.size, 11);
+  assert.equal(host.routes.size, 12);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {

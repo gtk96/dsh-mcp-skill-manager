@@ -4,6 +4,7 @@ import { createDiscovery, DiscoveryError } from './discovery.js';
 import { createCompatibility, CompatibilityError } from './compatibility.js';
 import { createMcpConfig, McpConfigError } from './mcp-config.js';
 import { createMcpPatch, PatchWriteError } from './mcp-write.js';
+import { createToolGuards, ToolGuardError } from './tool-guards.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -70,7 +71,7 @@ function tool(name, description, parameters, execute) {
         return await execute(args, exec);
       } catch (error) {
         if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError
-          || error instanceof McpConfigError || error instanceof PatchWriteError) throw error;
+          || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
@@ -100,8 +101,9 @@ function skillLookup(exec) {
 
 /** The settings page is the only writer; Agent tools stay read-only and report configuration from the same model. */
 export function apply(ctx, _config = {}) {
-  const discovery = createDiscovery(ctx);
   const compatibility = createCompatibility(ctx);
+  const toolGuards = createToolGuards(ctx, compatibility);
+  const discovery = createDiscovery(ctx, toolGuards);
   const mcpConfig = createMcpConfig(ctx, compatibility);
   const mcpPatch = createMcpPatch(ctx, compatibility);
   const runtimeSkills = new Map();
@@ -145,6 +147,16 @@ export function apply(ctx, _config = {}) {
     },
   );
   const disposeSkillTool = ctx.tools.register(skillsTool);
+
+  /**
+   * Deny calls to tools the page disabled. `tools.guard()` runs after the pre-execute waterfall and
+   * before the tool body, and a plain-context guard applies to every agent — exactly the reach a
+   * profile-level deny list needs. It hides nothing: the model still sees the schema and is told why
+   * the call failed, because the bridge offers no way to unregister a foreign tool.
+   */
+  const disposeToolGuard = typeof ctx.tools.guard === 'function'
+    ? ctx.tools.guard((exec) => toolGuards.reason(exec?.name))
+    : undefined;
 
   /** Settings-page-only runtime skill writes; the Agent tool cannot reach this. */
   const skillWrite = async (action, args, exec) => {
@@ -223,7 +235,7 @@ export function apply(ctx, _config = {}) {
   };
 
   const MUTATIONS = new Set([
-    'mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled',
+    'mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled', 'mcp.set-tool-disabled',
     'skills.register', 'skills.unregister',
   ]);
 
@@ -256,6 +268,9 @@ export function apply(ctx, _config = {}) {
           break;
         case 'mcp.set-enabled':
           value = await mcpPatch.setEnabled(args, exec);
+          break;
+        case 'mcp.set-tool-disabled':
+          value = await toolGuards.set(args, exec);
           break;
         case 'skills.list': {
           const result = await skillsTool.execute({ action: 'list' }, exec);
@@ -305,7 +320,7 @@ export function apply(ctx, _config = {}) {
       return { ok: true, value };
     } catch (error) {
       const known = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError
-        || error instanceof McpConfigError || error instanceof PatchWriteError;
+        || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError;
       return {
         ok: false,
         error: {
@@ -319,7 +334,7 @@ export function apply(ctx, _config = {}) {
 
   const rpcMethods = [
     'compatibility.status', 'mcp.discover', 'mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled',
-    'skills.list', 'skills.get', 'skills.register', 'skills.unregister',
+    'mcp.set-tool-disabled', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister',
   ];
 
   /** Every write changes executable configuration, so the caller must be the confirming owner session. */
@@ -373,6 +388,7 @@ export function apply(ctx, _config = {}) {
       active = false;
       disposeMcpTool();
       disposeSkillTool();
+      disposeToolGuard?.();
       for (const dispose of runtimeSkills.values()) dispose();
       runtimeSkills.clear();
     };

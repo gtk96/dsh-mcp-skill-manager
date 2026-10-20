@@ -517,6 +517,18 @@ async function page(t, host, options = {}) {
       return all.find((node) => text(node) === label) ?? all.find((node) => text(node).startsWith(label));
     },
     field(label) { return renderer.root.findAllByProps({ "aria-label": label })[0]; },
+    /** Every call switch on the page, keyed by tool name. A guarded tool reads as off. */
+    switches() {
+      return renderer.root.findAll((node) => node.props?.role === "switch")
+        .map((node) => ({ tool: node.props["aria-label"], allowed: node.props["aria-checked"] }));
+    },
+    async toggleSwitch(tool) {
+      const node = renderer.root.findAll((candidate) => candidate.props?.role === "switch"
+        && candidate.props["aria-label"] === tool)[0];
+      assert.ok(node, "Expected a call switch for: " + tool);
+      assert.equal(!!node.props.disabled, false, "Switch must be enabled: " + tool);
+      await act(async () => { await node.props.onClick(); await flush(); });
+    },
     async fill(values) {
       await act(async () => { for (const [label, value] of Object.entries(values)) {
         const field = helpers.field(label);

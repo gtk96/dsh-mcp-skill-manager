@@ -109,18 +109,52 @@ const zh = {
   "form.invalidNumber": "{field} 必须是正整数。",
   "form.credentialKeyRequired": "新增的凭据需要填写名称。",
   "form.unchanged": "没有需要保存的修改。",
-  "skills.note": "Runtime Skill 只在插件运行期间有效，不会写入配置文件。",
+  "skills.note": "Skill 就是磁盘上的 SKILL.md，改完立即生效，重启不会丢。",
+  "skills.runtime": "注册 Runtime Skill（重启后失效）",
+  "skills.runtimeHint": "Runtime Skill 只在插件运行期间存在，不会写入磁盘。需要长期保留就用「新建 Skill」。",
   "skills.incomplete": "Skill 目录尚未读取完整，结果可能缺项。",
-  "skills.empty": "当前 Profile 没有可见的 Skill。",
-  "skills.register": "注册 Runtime Skill",
+  "skills.empty": "还没有 Skill。用「新建 Skill」写一个，或把 SKILL.md 放进 Skill 目录。",
+  "skills.noMatch": "没有匹配的 Skill。",
+  "skills.search": "搜索",
+  "skills.searchPlaceholder": "按名称或描述过滤",
+  "skills.new": "新建 Skill",
+  "skills.edit": "编辑 Skill",
   "skills.name": "名称",
-  "skills.nameHint": "小写 kebab-case，例如 my-skill。",
+  "skills.nameHint": "小写 kebab-case，例如 my-skill。创建后不可改名。",
   "skills.description": "描述",
+  "skills.descriptionHint": "必填。运行时靠它判断什么时候用这个 Skill。",
   "skills.whenToUse": "何时使用",
   "skills.whenToUseHint": "可选。",
   "skills.content": "正文",
+  "skills.contentHint": "Markdown。正文会原样交给模型，frontmatter 由页面维护。",
+  "skills.root": "所属目录",
+  "skills.rootHint": "可写目录。项目内的 .dsh/skills 只对相应项目生效，不在这里列出。",
   "skills.viewTitle": "正文：{name}",
   "skills.contentEmpty": "（正文为空）",
+  "skills.copyPath": "复制路径",
+  "skills.reveal": "在访达中显示",
+  "skills.shadowed": "同名的 Skill 还有 {count} 个（{sources}），当前生效的是这一条。",
+  "skills.modelOff": "模型不可调用",
+  "skills.userOff": "不可手动调用",
+  "skills.modelInvocable": "模型可以调用",
+  "skills.userInvocable": "可以手动调用",
+  "skills.invocationHint": "关闭模型调用后，只有你手动输入 /{name} 才会用到它。",
+  "skills.disableHint": "停用只是把文件改名，随时可以恢复。",
+  "skills.removeHint": "删除会把文件移到 ~/.dsh/.trash/skills，不会真正抹掉。",
+  "skillSource.user-dsh": "本机 Skill 目录",
+  "skillSource.user-agents": "Agents 目录",
+  "skillSource.custom": "自定义目录",
+  "skillSource.bundled": "DSH 内置",
+  "skillSource.runtime": "Runtime",
+  "skillSource.project-dsh": "项目 .dsh",
+  "skillSource.project-agents": "项目 .agents",
+  "notice.skillCreated": "Skill 已创建并生效。",
+  "notice.skillSaved": "Skill 已保存并生效。",
+  "notice.skillRemoved": "Skill 已移到回收目录。",
+  "notice.skillDisabled": "Skill 已停用，文件只是改了名。",
+  "notice.skillEnabled": "Skill 已恢复。",
+  "notice.pathCopied": "路径已复制。",
+  "form.invalidSkillName": "名称只能用小写字母、数字和连字符，例如 my-skill。",
   "error.generic": "操作失败，请查看 DSH 日志。",
   "error.badResponse": "Host 返回的数据格式不正确，请确认插件与 DSH 版本一致。",
 };
@@ -228,18 +262,52 @@ const en = {
   "form.invalidNumber": "{field} must be a positive integer.",
   "form.credentialKeyRequired": "A new credential needs a key.",
   "form.unchanged": "Nothing to save.",
-  "skills.note": "Runtime skills live only while the plugin runs and are never written to the configuration.",
+  "skills.note": "A skill is just a SKILL.md on disk: edits take effect at once and survive a restart.",
+  "skills.runtime": "Register runtime skill (lost on restart)",
+  "skills.runtimeHint": "A runtime skill exists only while the plugin runs and is never written to disk. Use New skill to keep one.",
   "skills.incomplete": "The skill catalog is incomplete; entries may be missing.",
-  "skills.empty": "No skill is visible in this profile.",
-  "skills.register": "Register runtime skill",
+  "skills.empty": "No skill yet. Use New skill, or drop a SKILL.md into a skill directory.",
+  "skills.noMatch": "No skill matches.",
+  "skills.search": "Search",
+  "skills.searchPlaceholder": "Filter by name or description",
+  "skills.new": "New skill",
+  "skills.edit": "Edit skill",
   "skills.name": "Name",
-  "skills.nameHint": "Lowercase kebab-case, e.g. my-skill.",
+  "skills.nameHint": "Lowercase kebab-case, e.g. my-skill. It cannot be renamed later.",
   "skills.description": "Description",
+  "skills.descriptionHint": "Required. The runtime reads it to decide when to use this skill.",
   "skills.whenToUse": "When to use",
   "skills.whenToUseHint": "Optional.",
   "skills.content": "Content",
+  "skills.contentHint": "Markdown. The body goes to the model verbatim; the page maintains the frontmatter.",
+  "skills.root": "Directory",
+  "skills.rootHint": "Writable directories. A skill under a project's .dsh/skills applies to that project only and is not listed here.",
   "skills.viewTitle": "Content: {name}",
   "skills.contentEmpty": "(empty)",
+  "skills.copyPath": "Copy path",
+  "skills.reveal": "Show in Finder",
+  "skills.shadowed": "{count} other skill(s) share this name ({sources}); this is the one in effect.",
+  "skills.modelOff": "No model invocation",
+  "skills.userOff": "No manual invocation",
+  "skills.modelInvocable": "The model may invoke it",
+  "skills.userInvocable": "You may invoke it by hand",
+  "skills.invocationHint": "With model invocation off, only typing /{name} yourself reaches it.",
+  "skills.disableHint": "Disabling renames the file; nothing is lost.",
+  "skills.removeHint": "Deleting moves the file to ~/.dsh/.trash/skills; nothing is erased.",
+  "skillSource.user-dsh": "Local skills directory",
+  "skillSource.user-agents": "Agents directory",
+  "skillSource.custom": "Custom directory",
+  "skillSource.bundled": "Bundled with DSH",
+  "skillSource.runtime": "Runtime",
+  "skillSource.project-dsh": "Project .dsh",
+  "skillSource.project-agents": "Project .agents",
+  "notice.skillCreated": "Skill created and active.",
+  "notice.skillSaved": "Skill saved and active.",
+  "notice.skillRemoved": "Skill moved to the trash directory.",
+  "notice.skillDisabled": "Skill disabled; the file was only renamed.",
+  "notice.skillEnabled": "Skill restored.",
+  "notice.pathCopied": "Path copied.",
+  "form.invalidSkillName": "The name may only contain lowercase letters, digits and hyphens, e.g. my-skill.",
   "error.generic": "The operation failed; check the DSH log.",
   "error.badResponse": "The Host returned an unexpected shape; check that the plugin and DSH versions match.",
 };
@@ -302,7 +370,17 @@ const css = `
 .dsh-msm-pre{max-height:220px;overflow:auto;margin:0;border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f4f6f8);padding:10px;color:var(--dsw-alias-label-secondary,#59636e);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;}
 .dsh-msm-details{display:flex;flex-direction:column;gap:4px;}
 .dsh-msm-details summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary,#59636e);}
-@media(max-width:680px){.dsh-msm-head{align-items:stretch;flex-direction:column}.dsh-msm-card-top{flex-direction:column}.dsh-msm-cred{flex-direction:column;align-items:stretch}}
+.dsh-msm-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.dsh-msm-toolbar .dsh-msm-input{flex:1;min-width:160px;width:auto;}
+.dsh-msm-pathrow{display:flex;align-items:center;gap:8px;min-width:0;}
+.dsh-msm-path{flex:1;min-width:0;border:0;background:transparent;cursor:pointer;padding:0;font:inherit;font-size:11px;text-align:left;color:var(--dsw-alias-label-tertiary,#8a929c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;}
+.dsh-msm-path:hover:not(:disabled){color:var(--dsw-alias-brand-primary,#4677f5);text-decoration:underline;}
+.dsh-msm-path:disabled{cursor:not-allowed;}
+.dsh-msm-btn-mini{padding:2px 6px;font-size:11px;}
+.dsh-msm-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.dsh-msm-tag-off{background:transparent;border:1px solid var(--dsw-alias-border-l2,#cfd5dd);color:var(--dsw-alias-label-tertiary,#8a929c);}
+.dsh-msm-off .dsh-msm-name{color:var(--dsw-alias-label-tertiary,#8a929c);}
+@media(max-width:680px){.dsh-msm-head{align-items:stretch;flex-direction:column}.dsh-msm-card-top{flex-direction:column}.dsh-msm-cred{flex-direction:column;align-items:stretch}.dsh-msm-toolbar{align-items:stretch;flex-direction:column}}
 `;
 
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -550,6 +628,9 @@ function createManagerPage(connection) {
     const [guarded, setGuarded] = React.useState(new Set());
     const [skills, setSkills] = React.useState(null);
     const [skillsComplete, setSkillsComplete] = React.useState(true);
+    const [skillRoots, setSkillRoots] = React.useState([]);
+    const [disabledSkills, setDisabledSkills] = React.useState([]);
+    const [skillQuery, setSkillQuery] = React.useState("");
     const [busy, setBusy] = React.useState("load");
     const [error, setError] = React.useState("");
     const [notice, setNotice] = React.useState("");
@@ -558,6 +639,7 @@ function createManagerPage(connection) {
     const [confirm, setConfirm] = React.useState(null);
     const [skillView, setSkillView] = React.useState(null);
     const [skillForm, setSkillForm] = React.useState(null);
+    const [runtimeForm, setRuntimeForm] = React.useState(null);
 
     /** One sequence for every read; a newer request or unmount discards older results. */
     const sequence = React.useRef(0);
@@ -565,6 +647,15 @@ function createManagerPage(connection) {
     const canWriteMcp = status?.writes?.mcp === true;
     const canWriteGuards = status?.writes?.guards === true;
     const canWriteSkills = status?.writes?.skills === true;
+    const canWriteFiles = status?.writes?.skillFiles === true;
+
+    /** The three read paths all resolve the same skill payload. */
+    function applySkills(value) {
+      setSkills(value.skills);
+      setSkillsComplete(value.complete !== false);
+      setSkillRoots(Array.isArray(value.roots) ? value.roots : []);
+      setDisabledSkills(Array.isArray(value.disabled) ? value.disabled : []);
+    }
 
     React.useEffect(() => {
       void (async () => {
@@ -591,8 +682,7 @@ function createManagerPage(connection) {
           failures.push(failure(mcpRead));
         }
         if (skillRead.status === "fulfilled" && isRecord(skillRead.value) && Array.isArray(skillRead.value.skills)) {
-          setSkills(skillRead.value.skills);
-          setSkillsComplete(skillRead.value.complete !== false);
+          applySkills(skillRead.value);
         } else {
           setSkills([]);
           failures.push(failure(skillRead));
@@ -624,8 +714,7 @@ function createManagerPage(connection) {
       const value = await requestHost("skills.list");
       if (id !== sequence.current) return;
       if (!isRecord(value) || !Array.isArray(value.skills)) throw new Error(t("error.badResponse"));
-      setSkills(value.skills);
-      setSkillsComplete(value.complete !== false);
+      applySkills(value);
     }
 
     async function run(kind, action) {
@@ -662,8 +751,7 @@ function createManagerPage(connection) {
         if (mcpRead.status === "fulfilled" && isRecord(mcpRead.value) && Array.isArray(mcpRead.value.servers)) applyMcp(mcpRead.value);
         else problems.push(mcpRead.status === "rejected" ? errorText(mcpRead.reason, t) : t("error.badResponse"));
         if (skillRead.status === "fulfilled" && isRecord(skillRead.value) && Array.isArray(skillRead.value.skills)) {
-          setSkills(skillRead.value.skills);
-          setSkillsComplete(skillRead.value.complete !== false);
+          applySkills(skillRead.value);
         } else {
           problems.push(skillRead.status === "rejected" ? errorText(skillRead.reason, t) : t("error.badResponse"));
         }
@@ -784,28 +872,167 @@ function createManagerPage(connection) {
       });
     }
 
+    const blankSkill = () => ({
+      mode: "create",
+      name: "",
+      description: "",
+      whenToUse: "",
+      content: "",
+      root: skillRoots[0]?.path ?? "",
+      rootPath: "",
+      modelInvocable: true,
+      userInvocable: true,
+    });
+
     function openSkillForm() {
-      if (locked || !canWriteSkills) return;
-      setSkillForm({ name: "", description: "", whenToUse: "", content: "" });
+      if (locked || !canWriteFiles) return;
+      setSkillForm(blankSkill());
       setError("");
       setNotice("");
     }
 
-    function submitSkill(event) {
+    /** The body lives only in the file, so the form reads it back through the catalog. */
+    function openSkillEdit(skill) {
+      if (locked || !canWriteFiles || !skill.editable) return;
+      const name = skill.name;
+      void run("skill-load:" + name, async () => {
+        const value = await requestHost("skills.get", { name });
+        const live = isRecord(value?.skill) ? value.skill : null;
+        if (live === null) throw new Error(t("error.badResponse"));
+        setSkillForm({
+          mode: "edit",
+          name,
+          description: typeof live.description === "string" ? live.description : "",
+          whenToUse: typeof live.whenToUse === "string" ? live.whenToUse : "",
+          content: typeof live.content === "string" ? live.content : "",
+          root: skill.rootPath ?? "",
+          rootPath: skill.rootPath ?? "",
+          modelInvocable: live.invocation?.modelInvocable !== false,
+          userInvocable: live.invocation?.userInvocable !== false,
+        });
+        setError("");
+        setNotice("");
+      });
+    }
+
+    function submitSkillFiles(event) {
       event.preventDefault();
-      if (locked || skillForm === null || !canWriteSkills) return;
+      if (locked || skillForm === null || !canWriteFiles) return;
+      const mode = skillForm.mode;
+      const name = skillForm.name.trim();
+      const description = skillForm.description.trim();
+      if (!description) {
+        setError(t("skills.descriptionHint"));
+        return;
+      }
+      if (mode === "create" && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+        setError(t("form.invalidSkillName"));
+        return;
+      }
       const args = {
-        name: skillForm.name.trim(),
-        description: skillForm.description.trim(),
+        mode,
+        name,
+        description,
         content: skillForm.content,
+        root: mode === "create" ? skillForm.root : skillForm.rootPath,
+        modelInvocable: skillForm.modelInvocable,
+        userInvocable: skillForm.userInvocable,
       };
       if (skillForm.whenToUse.trim()) args.whenToUse = skillForm.whenToUse.trim();
       void run("skill-save", async () => {
-        await requestHost("skills.register", args);
+        await requestHost("skills.save", args);
         setSkillForm(null);
+        await reloadSkills();
+        setNotice(t(mode === "create" ? "notice.skillCreated" : "notice.skillSaved"));
+      });
+    }
+
+    function toggleSkill(row) {
+      if (locked || !canWriteFiles) return;
+      void run("skill-toggle:" + row.name, async () => {
+        await requestHost("skills.set-enabled", { name: row.name, root: row.rootPath, enabled: !row.enabled });
+        await reloadSkills();
+        setNotice(t(row.enabled ? "notice.skillDisabled" : "notice.skillEnabled"));
+      });
+    }
+
+    /** Runtime registration is the one skill write with no file behind it. */
+    function submitRuntime(event) {
+      event.preventDefault();
+      if (locked || runtimeForm === null || !canWriteSkills) return;
+      const name = runtimeForm.name.trim();
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+        setError(t("form.invalidSkillName"));
+        return;
+      }
+      const args = { name, description: runtimeForm.description.trim(), content: runtimeForm.content };
+      if (runtimeForm.whenToUse.trim()) args.whenToUse = runtimeForm.whenToUse.trim();
+      void run("skill-save", async () => {
+        await requestHost("skills.register", args);
+        setRuntimeForm(null);
         await reloadSkills();
         setNotice(t("notice.skillRegistered"));
       });
+    }
+
+    function removeSkillFile(row) {
+      if (locked || !canWriteFiles) return;
+      void run("skill-remove:" + row.name, async () => {
+        await requestHost("skills.remove", { name: row.name, root: row.rootPath });
+        setConfirm(null);
+        if (skillView?.name === row.name) setSkillView(null);
+        if (skillForm?.mode === "edit" && skillForm.name === row.name) setSkillForm(null);
+        await reloadSkills();
+        setNotice(t("notice.skillRemoved"));
+      });
+    }
+
+    function revealSkill(path) {
+      if (locked || !canWriteFiles || typeof path !== "string") return;
+      void run("skill-reveal", () => requestHost("skills.reveal", { path }));
+    }
+
+    function copySkillPath(path, event) {
+      // A clipboard refusal is a browser permission issue, not an operation failure.
+      try {
+        void navigator.clipboard.writeText(path).then(() => setNotice(t("notice.pathCopied")), () => {});
+      } catch {
+        setNotice("");
+      }
+      if (event?.currentTarget) event.currentTarget.blur();
+    }
+
+    /** Filesystem skills first, then the ones this page hid; the filter reads both. */
+    function skillRows() {
+      const active = (skills ?? []).map((skill) => ({
+        ...skill,
+        enabled: true,
+        key: "active:" + skill.name,
+      }));
+      const hidden = disabledSkills.map((entry) => ({
+        name: entry.name,
+        description: entry.description,
+        whenToUse: undefined,
+        invocation: undefined,
+        source: entry.root,
+        path: entry.path,
+        rootPath: entry.rootPath,
+        editable: true,
+        enabled: false,
+        key: "disabled:" + entry.rootPath + ":" + entry.name,
+      }));
+      const needle = skillQuery.trim().toLowerCase();
+      const all = [...active, ...hidden];
+      if (!needle) return all;
+      return all.filter((row) => [row.name, row.description, row.whenToUse]
+        .some((field) => typeof field === "string" && field.toLowerCase().includes(needle)));
+    }
+
+    /** An unknown source keeps its raw name rather than showing a dictionary key. */
+    function sourceLabel(source) {
+      const key = "skillSource." + String(source);
+      const label = t(key);
+      return label === key ? String(source ?? "") : label;
     }
 
     function viewSkill(name) {
@@ -818,7 +1045,7 @@ function createManagerPage(connection) {
 
     function unregisterSkill(name) {
       if (locked || !canWriteSkills) return;
-      void run("skill-remove:" + name, async () => {
+      void run("skill-unregister:" + name, async () => {
         await requestHost("skills.unregister", { name });
         setConfirm(null);
         if (skillView?.name === name) setSkillView(null);
@@ -846,7 +1073,7 @@ function createManagerPage(connection) {
     function statusNotice() {
       if (status === null) return null;
       // `guards` also rides on a tested version, so its absence is reported beside the others.
-      if (canWriteMcp && canWriteSkills && canWriteGuards) return null;
+      if (canWriteMcp && canWriteSkills && canWriteGuards && canWriteFiles) return null;
       const missing = Object.entries(status.capabilities ?? {})
         .filter(([, available]) => available !== true)
         .map(([name]) => name);
@@ -1146,56 +1373,149 @@ function createManagerPage(connection) {
         h("div", { className: "dsh-msm-muted" }, t("mcp.footnote")));
     }
 
-    function renderSkill(skill) {
-      const detail = [skill.source, skill.provider, skill.description].filter((part) => typeof part === "string" && part).join(" · ");
-      const removing = confirm?.kind === "unregister" && confirm.name === skill.name;
-      return h("article", { className: "dsh-msm-card", key: skill.name },
+    function renderSkill(row) {
+      const removing = confirm?.kind === "skill" && confirm.id === row.key;
+      const unregistering = confirm?.kind === "unregister" && confirm.name === row.name;
+      // Without a writable runtime the row stays readable but offers no file action at all.
+      const editable = row.editable === true && canWriteFiles;
+      const badges = [];
+      if (row.invocation?.modelInvocable === false) badges.push(t("skills.modelOff"));
+      if (row.invocation?.userInvocable === false) badges.push(t("skills.userOff"));
+      const shadowed = [...new Set((row.shadowed ?? []).map((entry) => sourceLabel(entry.source)))];
+      return h("article", { className: "dsh-msm-card" + (row.enabled ? "" : " dsh-msm-off"), key: row.key },
         h("div", { className: "dsh-msm-card-top" },
           h("div", { className: "dsh-msm-title" },
-            h("span", { className: "dsh-msm-name" }, skill.name),
-            skill.canUnregister ? h("span", { className: "dsh-msm-tag" }, "runtime") : null),
+            h("span", { className: "dsh-msm-name" }, row.name),
+            row.canUnregister ? h("span", { className: "dsh-msm-tag" }, t("skillSource.runtime")) : h("span", { className: "dsh-msm-tag" }, sourceLabel(row.source)),
+            row.enabled ? null : h("span", { className: "dsh-msm-tag dsh-msm-tag-warn" }, t("state.disabled"))),
           h("div", { className: "dsh-msm-actions" },
-            h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => viewSkill(skill.name) }, t("action.view")),
-            skill.canUnregister
+            h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => viewSkill(row.name) }, t("action.view")),
+            editable
+              ? h("button", {
+                className: "dsh-msm-btn", type: "button", disabled: locked || !row.enabled,
+                title: row.enabled ? undefined : t("mcp.enableFirst"),
+                onClick: () => openSkillEdit(row),
+              }, t("action.edit"))
+              : null,
+            row.canUnregister
+              ? unregistering
+                ? h(React.Fragment, null,
+                  h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => unregisterSkill(row.name) }, t("action.confirmUnregister")),
+                  h("button", { className: "dsh-msm-btn", type: "button", onClick: () => setConfirm(null) }, t("action.cancel")))
+                : h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => setConfirm({ kind: "unregister", name: row.name }) }, t("action.unregister"))
+              : null,
+            editable
               ? removing
                 ? h(React.Fragment, null,
-                  h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => unregisterSkill(skill.name) }, t("action.confirmUnregister")),
+                  h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked, onClick: () => removeSkillFile(row) }, t("action.confirmRemove")),
                   h("button", { className: "dsh-msm-btn", type: "button", onClick: () => setConfirm(null) }, t("action.cancel")))
-                : h("button", { className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked || !canWriteSkills, onClick: () => setConfirm({ kind: "unregister", name: skill.name }) }, t("action.unregister"))
+                : h("button", {
+                  className: "dsh-msm-btn dsh-msm-btn-danger", type: "button", disabled: locked,
+                  title: t("skills.removeHint"),
+                  onClick: () => setConfirm({ kind: "skill", id: row.key }),
+                }, t("action.remove"))
+              : null,
+            editable
+              ? h("button", {
+                className: "dsh-msm-switch", type: "button", role: "switch", "aria-checked": row.enabled,
+                "aria-label": row.name, title: t("skills.disableHint"), disabled: locked,
+                onClick: () => toggleSkill(row),
+              })
               : null)),
-        detail ? h("div", { className: "dsh-msm-muted" }, detail) : null,
-        typeof skill.path === "string" && skill.path ? h("div", { className: "dsh-msm-muted" }, skill.path) : null);
+        row.description ? h("div", { className: "dsh-msm-muted" }, row.description) : null,
+        badges.length
+          ? h("div", { className: "dsh-msm-badges" }, badges.map((label) => h("span", { className: "dsh-msm-tag dsh-msm-tag-off", key: label }, label)))
+          : null,
+        shadowed.length
+          ? h("div", { className: "dsh-msm-muted" }, t("skills.shadowed", { count: shadowed.length, sources: shadowed.join("、") }))
+          : null,
+        typeof row.path === "string" && row.path
+          ? editable
+            ? h("div", { className: "dsh-msm-pathrow" },
+              h("button", { className: "dsh-msm-path", type: "button", title: t("skills.reveal"), disabled: locked, onClick: () => revealSkill(row.path) }, row.path),
+              h("button", { className: "dsh-msm-btn dsh-msm-btn-mini", type: "button", onClick: (event) => copySkillPath(row.path, event) }, t("skills.copyPath")))
+            : h("div", { className: "dsh-msm-muted" }, row.path)
+          : null);
     }
 
     function renderSkillForm() {
       const update = (patch) => setSkillForm((current) => current === null ? current : { ...current, ...patch });
-      return h("form", { className: "dsh-msm-card dsh-msm-form", "aria-label": t("skills.register"), onSubmit: submitSkill },
-        h("h2", { className: "dsh-msm-form-title" }, t("skills.register")),
-        h(Field, { label: t("skills.name"), hint: t("skills.nameHint") },
-          h("input", { className: "dsh-msm-input", "aria-label": t("skills.name"), value: skillForm.name, disabled: locked, onChange: (event) => update({ name: event.currentTarget.value }) })),
-        h(Field, { label: t("skills.description") },
-          h("input", { className: "dsh-msm-input", "aria-label": t("skills.description"), value: skillForm.description, disabled: locked, onChange: (event) => update({ description: event.currentTarget.value }) })),
+      const creating = skillForm.mode === "create";
+      const title = creating ? t("skills.new") : t("skills.edit");
+      return h("form", { className: "dsh-msm-card dsh-msm-form", "aria-label": title, onSubmit: submitSkillFiles },
+        h("h2", { className: "dsh-msm-form-title" }, title),
+        creating
+          ? h(Field, { label: t("skills.name"), hint: t("skills.nameHint") },
+            h("input", { className: "dsh-msm-input", "aria-label": t("skills.name"), value: skillForm.name, disabled: locked, spellCheck: false, onChange: (event) => update({ name: event.currentTarget.value }) }))
+          : h(Field, { label: t("skills.name") }, h("span", { className: "dsh-msm-code" }, skillForm.name)),
+        creating
+          ? h(Field, { label: t("skills.root"), hint: t("skills.rootHint") },
+            h("select", { className: "dsh-msm-input", "aria-label": t("skills.root"), value: skillForm.root, disabled: locked, onChange: (event) => update({ root: event.currentTarget.value }) },
+              skillRoots.map((root) => h("option", { key: root.path, value: root.path }, sourceLabel(root.source) + " · " + root.path))))
+          : h(Field, { label: t("skills.root") }, h("span", { className: "dsh-msm-code" }, skillForm.rootPath)),
+        h(Field, { label: t("skills.description"), hint: t("skills.descriptionHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.description"), value: skillForm.description, disabled: locked, required: true, onChange: (event) => update({ description: event.currentTarget.value }) })),
         h(Field, { label: t("skills.whenToUse"), hint: t("skills.whenToUseHint") },
           h("input", { className: "dsh-msm-input", "aria-label": t("skills.whenToUse"), value: skillForm.whenToUse, disabled: locked, onChange: (event) => update({ whenToUse: event.currentTarget.value }) })),
-        h(Field, { label: t("skills.content") },
-          h("textarea", { className: "dsh-msm-input dsh-msm-textarea", "aria-label": t("skills.content"), value: skillForm.content, disabled: locked, spellCheck: false, required: true, onChange: (event) => update({ content: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.content"), hint: t("skills.contentHint") },
+          h("textarea", { className: "dsh-msm-input dsh-msm-textarea", "aria-label": t("skills.content"), value: skillForm.content, disabled: locked, spellCheck: false, onChange: (event) => update({ content: event.currentTarget.value }) })),
+        h("label", { className: "dsh-msm-check" },
+          h("input", { type: "checkbox", "aria-label": t("skills.modelInvocable"), checked: skillForm.modelInvocable, disabled: locked, onChange: (event) => update({ modelInvocable: event.currentTarget.checked }) }),
+          h("span", null, t("skills.modelInvocable"))),
+        h("label", { className: "dsh-msm-check" },
+          h("input", { type: "checkbox", "aria-label": t("skills.userInvocable"), checked: skillForm.userInvocable, disabled: locked, onChange: (event) => update({ userInvocable: event.currentTarget.checked }) }),
+          h("span", null, t("skills.userInvocable"))),
+        h("div", { className: "dsh-msm-hint" }, t("skills.invocationHint", { name: skillForm.name || "…" })),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "submit", disabled: locked || !canWriteSkills }, busy === "skill-save" ? t("action.saving") : t("action.save")),
+          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "submit", disabled: locked || !canWriteFiles }, busy === "skill-save" ? t("action.saving") : t("action.save")),
           h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => setSkillForm(null) }, t("action.cancel"))));
     }
 
-    function renderSkills() {
-      const list = skills ?? [];
-      return h("div", { className: "dsh-msm-list" },
+    function renderRuntimeForm() {
+      const update = (patch) => setRuntimeForm((current) => current === null ? current : { ...current, ...patch });
+      return h("form", { className: "dsh-msm-form", "aria-label": t("skills.runtime"), onSubmit: submitRuntime },
+        h(Field, { label: t("skills.name"), hint: t("skills.nameHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.name"), value: runtimeForm.name, disabled: locked, spellCheck: false, onChange: (event) => update({ name: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.description"), hint: t("skills.descriptionHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.description"), value: runtimeForm.description, disabled: locked, required: true, onChange: (event) => update({ description: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.whenToUse"), hint: t("skills.whenToUseHint") },
+          h("input", { className: "dsh-msm-input", "aria-label": t("skills.whenToUse"), value: runtimeForm.whenToUse, disabled: locked, onChange: (event) => update({ whenToUse: event.currentTarget.value }) })),
+        h(Field, { label: t("skills.content") },
+          h("textarea", { className: "dsh-msm-input dsh-msm-textarea", "aria-label": t("skills.content"), value: runtimeForm.content, disabled: locked, spellCheck: false, required: true, onChange: (event) => update({ content: event.currentTarget.value }) })),
         h("div", { className: "dsh-msm-actions" },
-          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "button", disabled: locked || !canWriteSkills, onClick: openSkillForm }, t("skills.register"))),
+          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "submit", disabled: locked || !canWriteSkills }, busy === "skill-save" ? t("action.saving") : t("action.save")),
+          h("button", { className: "dsh-msm-btn", type: "button", disabled: locked, onClick: () => setRuntimeForm(null) }, t("action.cancel"))));
+    }
+
+    function renderSkills() {
+      const rows = skillRows();
+      const filtering = skillQuery.trim().length > 0;
+      return h("div", { className: "dsh-msm-list" },
+        h("div", { className: "dsh-msm-toolbar" },
+          h("input", {
+            className: "dsh-msm-input", type: "search", "aria-label": t("skills.search"),
+            placeholder: t("skills.searchPlaceholder"), value: skillQuery,
+            onChange: (event) => setSkillQuery(event.currentTarget.value),
+          }),
+          h("button", { className: "dsh-msm-btn dsh-msm-btn-primary", type: "button", disabled: locked || !canWriteFiles || skillForm !== null, onClick: openSkillForm }, t("skills.new"))),
         h("div", { className: "dsh-msm-muted" }, t("skills.note")),
         !skillsComplete ? h("div", { className: "dsh-msm-note" }, t("skills.incomplete")) : null,
         skillForm !== null ? renderSkillForm() : null,
         skills === null ? null
-          : list.length === 0
-            ? h("div", { className: "dsh-msm-empty" }, t("skills.empty"))
-            : h("div", { className: "dsh-msm-list" }, list.map(renderSkill)),
+          : rows.length === 0
+            ? h("div", { className: "dsh-msm-empty" }, filtering ? t("skills.noMatch") : t("skills.empty"))
+            : h("div", { className: "dsh-msm-list" }, rows.map(renderSkill)),
+        // A runtime skill is never persisted, so it stays behind a secondary entry.
+        h("details", { className: "dsh-msm-note dsh-msm-details" },
+          h("summary", null, t("skills.runtime")),
+          h("div", { className: "dsh-msm-muted" }, t("skills.runtimeHint")),
+          runtimeForm === null
+            ? h("div", { className: "dsh-msm-actions" },
+              h("button", {
+                className: "dsh-msm-btn", type: "button", disabled: locked || !canWriteSkills,
+                onClick: () => { setRuntimeForm({ name: "", description: "", whenToUse: "", content: "" }); setError(""); setNotice(""); },
+              }, t("skills.runtime")))
+            : renderRuntimeForm()),
         skillView !== null
           ? h("article", { className: "dsh-msm-card" },
             h("div", { className: "dsh-msm-card-top" },

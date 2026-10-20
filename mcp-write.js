@@ -116,10 +116,11 @@ async function atomicWrite() {
  * Write one file atomically with the same helper the patch uses; other modules own their own locks.
  * @param {string} filename Target path.
  * @param {string} text Contents.
+ * @param {{ mode?: number }} [options] Permission bits; defaults to owner-only.
  */
-export async function writeTextAtomic(filename, text) {
+export async function writeTextAtomic(filename, text, { mode = 0o600 } = {}) {
   const { writeFileAtomic } = await atomicWrite();
-  await writeFileAtomic(filename, text, { mode: 0o600 });
+  await writeFileAtomic(filename, text, { mode });
 }
 
 function readTextOrEmpty(filename) {

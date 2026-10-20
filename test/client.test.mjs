@@ -240,9 +240,12 @@ await check('Skills render, open their body, and register through the same page'
   assert.ok(ui.content().includes('fixture-skill'));
   await ui.click('查看正文');
   assert.ok(ui.content().includes('Fixture body'));
-  await ui.click('注册 Runtime Skill');
+  // Registering a runtime skill is the secondary entry, so it lives behind the details disclosure.
+  const runtime = '注册 Runtime Skill（重启后失效）';
+  assert.ok(ui.content().includes(runtime));
+  await ui.click(runtime);
   await ui.fill({ 名称: 'new-skill', 描述: 'New', 正文: 'New body' });
-  await ui.submit('注册 Runtime Skill');
+  await ui.submit(runtime);
   const [sent] = ui.mutations();
   assert.equal(sent.method, 'skills.register');
   assert.equal(sent.args.name, 'new-skill');

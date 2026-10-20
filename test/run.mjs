@@ -20,11 +20,12 @@ const sources = [
   ['mcp-patch.js', 'mcp-patch.js'],
   ['mcp-write.js', 'mcp-write.js'],
   ['tool-guards.js', 'tool-guards.js'],
+  ['skill-files.js', 'skill-files.js'],
   ['package.json', 'package.json'],
 ];
 for (const [source, destination] of sources) copyFileSync(resolve(repo, source), resolve(fixture, destination));
 
-const suites = ['regression.test.mjs', 'mcp-patch.test.mjs', 'mcp-config.test.mjs', 'mcp-write.test.mjs', 'tool-guards.test.mjs', 'skills.test.mjs', 'client.test.mjs', 'compatibility.test.mjs'];
+const suites = ['regression.test.mjs', 'mcp-patch.test.mjs', 'mcp-config.test.mjs', 'mcp-write.test.mjs', 'tool-guards.test.mjs', 'skill-files.test.mjs', 'skills.test.mjs', 'client.test.mjs', 'compatibility.test.mjs'];
 for (const name of suites) copyFileSync(resolve(testRoot, name), resolve(fixture, name));
 
 // The runtime version is read through `@deepseek-ai/dsh/package.json`; the fixture provides only that file.

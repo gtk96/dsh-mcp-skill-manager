@@ -5,6 +5,7 @@ import { createCompatibility, CompatibilityError } from './compatibility.js';
 import { createMcpConfig, McpConfigError } from './mcp-config.js';
 import { createMcpPatch, PatchWriteError } from './mcp-write.js';
 import { createToolGuards, ToolGuardError } from './tool-guards.js';
+import { createSkillFiles, SkillFileError, isSkillName } from './skill-files.js';
 
 export const name = 'mcp-skill-manager';
 export const inject = ['configEditor', 'skills', 'tools'];
@@ -71,15 +72,12 @@ function tool(name, description, parameters, execute) {
         return await execute(args, exec);
       } catch (error) {
         if (error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError
-          || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError) throw error;
+          || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError
+          || error instanceof SkillFileError) throw error;
         throw new ManagerError('Host operation failed; check the DSH logs.');
       }
     },
   };
-}
-
-function isSkillName(value) {
-  return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 }
 
 function requireNonBlank(value, label) {
@@ -103,6 +101,7 @@ function skillLookup(exec) {
 export function apply(ctx, _config = {}) {
   const compatibility = createCompatibility(ctx);
   const toolGuards = createToolGuards(ctx, compatibility);
+  const skillFiles = createSkillFiles(ctx, compatibility);
   const discovery = createDiscovery(ctx, toolGuards);
   const mcpConfig = createMcpConfig(ctx, compatibility);
   const mcpPatch = createMcpPatch(ctx, compatibility);
@@ -236,7 +235,7 @@ export function apply(ctx, _config = {}) {
 
   const MUTATIONS = new Set([
     'mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled', 'mcp.set-tool-disabled',
-    'skills.register', 'skills.unregister',
+    'skills.register', 'skills.unregister', 'skills.save', 'skills.remove', 'skills.set-enabled', 'skills.reveal',
   ]);
 
   const handleRpc = async (method, payload, signal) => {
@@ -288,18 +287,39 @@ export function apply(ctx, _config = {}) {
             const skill = effective.get(skillName);
             if (skill) selected.set(skillName, skill);
           }
+          const writable = new Set(skillFiles.roots().map(({ source }) => source));
+          const grouped = new Map();
+          for (const skill of result.skills) {
+            if (!grouped.has(skill.name)) grouped.set(skill.name, []);
+            grouped.get(skill.name).push(skill);
+          }
           value = {
             complete: result.complete,
             scope: result.scope,
-            skills: [...selected.values()].map((skill) => ({
-              name: skill.name,
-              description: skill.description,
-              whenToUse: skill.whenToUse,
-              source: skill.source,
-              provider: skill.provider,
-              path: typeof skill.path === 'string' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(skill.path) ? skill.path : undefined,
-              canUnregister: skill.source === 'runtime' && skill.provider === runtimeProvider && runtimeSkills.has(skill.name),
-            })),
+            skills: [...selected.values()].map((skill) => {
+              // A root is addressed by path: several custom directories share the source name `custom`.
+              const root = skillFiles.rootOf(skill.path);
+              const shadowed = (grouped.get(skill.name) ?? []).filter((entry) => entry.source !== skill.source
+                || entry.provider !== skill.provider || entry.path !== skill.path);
+              return {
+                name: skill.name,
+                description: skill.description,
+                whenToUse: skill.whenToUse,
+                invocation: isRecord(skill.invocation) ? skill.invocation : undefined,
+                source: skill.source,
+                provider: skill.provider,
+                path: typeof skill.path === 'string' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(skill.path) ? skill.path : undefined,
+                canUnregister: skill.source === 'runtime' && skill.provider === runtimeProvider && runtimeSkills.has(skill.name),
+                // Only a skill in a root this page can write gets the file actions.
+                editable: writable.has(skill.source) && root !== undefined,
+                rootPath: root?.path,
+                shadowed: shadowed.length
+                  ? shadowed.map((entry) => ({ source: entry.source, provider: entry.provider, path: entry.path }))
+                  : undefined,
+              };
+            }),
+            roots: skillFiles.roots(),
+            disabled: skillFiles.disabled(),
           };
           break;
         }
@@ -314,13 +334,28 @@ export function apply(ctx, _config = {}) {
         case 'skills.unregister':
           value = await skillWrite('unregister', args, exec);
           break;
+        case 'skills.save':
+          value = args.mode === 'create'
+            ? await skillFiles.create(args, exec)
+            : await skillFiles.update(args, exec);
+          break;
+        case 'skills.remove':
+          value = await skillFiles.remove(args, exec);
+          break;
+        case 'skills.set-enabled':
+          value = await skillFiles.setEnabled(args, exec);
+          break;
+        case 'skills.reveal':
+          value = await skillFiles.reveal(args, exec);
+          break;
         default:
           throw new ManagerError('Unknown mcp-skill-manager RPC method');
       }
       return { ok: true, value };
     } catch (error) {
       const known = error instanceof ManagerError || error instanceof DiscoveryError || error instanceof CompatibilityError
-        || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError;
+        || error instanceof McpConfigError || error instanceof PatchWriteError || error instanceof ToolGuardError
+        || error instanceof SkillFileError;
       return {
         ok: false,
         error: {
@@ -335,6 +370,7 @@ export function apply(ctx, _config = {}) {
   const rpcMethods = [
     'compatibility.status', 'mcp.discover', 'mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled',
     'mcp.set-tool-disabled', 'skills.list', 'skills.get', 'skills.register', 'skills.unregister',
+    'skills.save', 'skills.remove', 'skills.set-enabled', 'skills.reveal',
   ];
 
   /** Every write changes executable configuration, so the caller must be the confirming owner session. */

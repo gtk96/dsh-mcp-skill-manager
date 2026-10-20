@@ -1,6 +1,6 @@
 # DSH MCP & Skill Manager
 
-DeepSeek Harness（DSH）插件：在 **Settings → MCP & Skills** 里新增、编辑、删除、启用/禁用 MCP Server，并管理 Runtime Skill。
+DeepSeek Harness（DSH）插件：在 **Settings → MCP & Skills** 里新增、编辑、删除、启用/禁用 MCP Server，管理本机 Skill 文件，并停用单个 MCP 工具的调用。
 
 官方 DSH 0.2.1-rc.2 **没有** MCP 设置页，也没有管理 MCP 的 CLI；不装这个插件时，MCP Server 只能手改 Profile 的 `cordis.patch.yml`。
 
@@ -9,7 +9,8 @@ DeepSeek Harness（DSH）插件：在 **Settings → MCP & Skills** 里新增、
 - **MCP Server**：新增、编辑、删除、启用/禁用；stdio 与 streamable-http 两种传输的完整字段。
 - **工具目录**：按 `mcp__<serverName>__` 前缀把工具归到对应 Server；配置了但没有返回工具的 Server 会单独提示。
 - **单个工具停用调用**：对任意 MCP 工具关闭调用，其它工具不受影响（见「停用单个工具」）。
-- **Runtime Skill**：列出、查看正文、注册、注销；仅在插件运行期间有效。
+- **Skill 文件**：新建、编辑、删除、停用/恢复 `SKILL.md`；可搜索过滤、在访达中定位、复制路径（见「管理 Skill」）。
+- **Runtime Skill**：注册与注销，仅存活于本次运行；入口收在 Skill 页的次要位置。
 - **中英双语**：接入 DSH 的 locale 服务，跟随设置里的语言切换；没有 locale 服务时使用内置中文。
 
 ## 安装
@@ -61,6 +62,26 @@ dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-ma
 
 若运行时不提供 `tools.guard`，页面不显示这些开关，`compatibility.status` 的 `writes.guards` 为 `false`。
 
+## 管理 Skill
+
+Skill 就是磁盘上的文件：官方 `@deepseek-ai/dsh-skill-filesystem` 读取 `<root>/<name>/SKILL.md`（也支持扁平 `<root>/<name>.md`），并监视自己的根目录。本插件**直接写这些文件**——运行时的 `skills` 服务只提供读取，没有写入接口。写完立刻被 provider 发现，不需要重启。
+
+可写的根目录按发现顺序列出：
+
+| 来源 | 路径 | 说明 |
+| --- | --- | --- |
+| `custom` | provider 的 `customSkillDirs` | 配置里显式指定的目录 |
+| `user-dsh` | `$DSH_HOME/skills`（默认 `~/.dsh/skills`） | 本机 Skill 目录 |
+| `user-agents` | `$DSH_AGENTS_HOME/skills`（默认 `~/.agents/skills`） | Agents 目录 |
+
+项目内的 `<project>/.dsh/skills` 与 `<project>/.agents/skills` 依赖会话 cwd，设置页无法确定，因此**不在这里列出**；它们提供的 Skill 照常出现在列表里，只是没有文件操作。内置 Skill 同样只读。
+
+- **新建 / 编辑**：写 `name`、`description`、`whenToUse` 与正文；不认识的 frontmatter 键原样保留。运行时只认连字符键，所以页面只会写 `disable-model-invocation` / `user-invocable`，写成驼峰（`disableModelInvocation` 等）会让**整个文件**被忽略——本插件不会写出这些键。
+- **停用 / 恢复**：把入口文件名改成 `SKILL.md.disabled`（扁平文件同理），provider 就不再发现它；开关一拨即可恢复，文件内容不动。
+- **删除**：整个目录移到 `$DSH_HOME/.trash/skills/<name>-<时间戳>`。**不 unlink**，误删可以从回收目录拿回来。
+- **调用策略**：`disable-model-invocation: true` 让模型不能自主调用（只能由你手动 `/name` 触发），`user-invocable: false` 关掉手动入口。两项都在表单里，启用中的限制会以标签显示在卡片上。
+- **同名覆盖**：多个根目录有同名 Skill 时，只有优先级最高的一个生效；卡片会写明还有几个同名项、分别来自哪里。
+
 ## 兼容性
 
 - 运行版本只从 `@deepseek-ai/dsh/package.json` 读取，不访问网络。
@@ -70,15 +91,16 @@ dsh plugin --profile web add "https://codeload.github.com/gtk96/dsh-mcp-skill-ma
 ## 已知限制
 
 - **没有连接状态**：官方 MCP 桥不暴露连接状态。页面只展示 DSH 实际注册的工具；「已配置但没有返回工具」是静默失败唯一可见的症状。
-- **停用工具 ≠ 隐藏工具**：见上一节。模型仍会看到被停用的工具，尝试调用后收到拒绝原因。
-- **Runtime Skill 不持久化**：插件停止运行即失效；持久化 Skill 文件不属于本插件能力。
+- **停用工具 ≠ 隐藏工具**：见上一节。模型仍会看到被停用的工具，尝试调用后收到拒绝理由。
+- **Runtime Skill 不持久化**：插件停止运行即失效。需要长期保留的 Skill 请用「新建 Skill」写成文件。
+- **项目级 Skill 只读**：`<project>/.dsh/skills` 依赖会话 cwd，页面不提供文件操作（见「管理 Skill」）。
 - **预设内的 MCP 行不在此页管理**：它们是 Agent 预设的一部分，归属该预设。
 - **`!!js` 字段**：命令、参数、URL、目录等字段若是 YAML 表达式，页面只读展示，不解析、不重写。
 - **凭据不回显**：`env` 与 `headers` 只显示键名；输入新值才替换，留空保持不变，点「删除」会在保存时移除该键。
 
 ## 安全边界
 
-会改动可执行配置或注入模型可见指令的操作（MCP 写入、工具停用、Runtime Skill 注册/注销）只接受**本机确认中的所有者会话**；其它调用方得到 `MCP_SKILL_MANAGER_FORBIDDEN`。面向 Agent 的两个工具（`dsh_manage_mcp_servers`、`dsh_manage_skills`）只读。
+会改动可执行配置、写入文件或启动宿主进程的操作（MCP 写入、工具停用、Runtime Skill 注册/注销、Skill 文件写入、在访达中定位）只接受**本机确认中的所有者会话**；其它调用方得到 `MCP_SKILL_MANAGER_FORBIDDEN`。面向 Agent 的两个工具（`dsh_manage_mcp_servers`、`dsh_manage_skills`）只读，不能新建或修改任何 Skill 文件。
 
 ## RPC
 
@@ -91,10 +113,13 @@ Client 用 `ctx.connection.rpc.call('/api', 'mcp-skill-manager.' + method, args)
 | `mcp.create` / `mcp.update` / `mcp.reset` | 新增 / 编辑 / 重置为默认 |
 | `mcp.remove` / `mcp.set-enabled` | 删除（或禁用）/ 启用禁用 |
 | `mcp.set-tool-disabled` | 停用或恢复单个 MCP 工具的调用 |
-| `skills.list` / `skills.get` | Skill 目录与正文 |
+| `skills.list` / `skills.get` | Skill 目录（含可写根目录、已停用项、同名覆盖）与正文 |
 | `skills.register` / `skills.unregister` | Runtime Skill 注册与注销 |
+| `skills.save` | 新建（`mode: "create"`）或改写（`mode: "edit"`）Skill 文件 |
+| `skills.remove` / `skills.set-enabled` | 移到回收目录 / 改名停用或恢复 |
+| `skills.reveal` | 在系统文件管理器里定位一个 Skill 文件（只接受可写根目录内的路径） |
 
-写入结果带 `application`：`applied`（已生效）、`restart-required`（需重启）、`overridden`（被更高优先级配置覆盖）。
+写入结果带 `application`：`applied`（已生效）、`restart-required`（需重启）、`overridden`（被更高优先级配置覆盖）。Skill 文件写入直接落盘，`skills.list` 的下一读即反映变化。
 
 ## 开发
 

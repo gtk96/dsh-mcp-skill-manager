@@ -41,6 +41,8 @@ export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
       // A profile directory is where the deny list persists; without one the guard would forget on restart.
       toolGuard: hasMethods(tools, ['guard']) && typeof ctx.get('profileContext')?.dir === 'string',
       toolGuardState: typeof ctx.get('profileContext')?.dir === 'string',
+      // Skill files live under the DSH/agents homes, which exist for every profile; no runtime API is involved.
+      skillFiles: typeof ctx.get('profileContext')?.dir === 'string',
     };
     const tested = versionStatus === 'tested';
     const writes = {
@@ -48,6 +50,8 @@ export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
       // The guard is a public `tools` method, so it needs no config editor — only the tested version and a profile.
       guards: tested && capabilities.toolGuard,
       skills: tested && capabilities.runtimeSkills,
+      // Writing `SKILL.md` needs no runtime interface, only a home directory the provider already watches.
+      skillFiles: tested && capabilities.skillFiles,
     };
     const reason = versionStatus === 'unknown' ? '无法识别 DSH 运行版本'
       : versionStatus === 'unverified' ? `DSH ${runtimeVersion} 未通过本插件的版本回归`
@@ -73,7 +77,8 @@ export function createCompatibility(ctx, runtimeReader = readRuntimeVersion) {
       const specific = kind === 'skills' && status.reason === null ? '缺少 Runtime Skill 接口'
         : kind === 'guards' && status.reason === null
           ? status.capabilities.toolGuard ? '该 Profile 目录不可写，停用状态无法保存' : '当前 DSH 未提供 tools.guard 接口'
-          : status.reason;
+          : kind === 'skillFiles' && status.reason === null ? '该 Profile 目录不可写，Skill 文件无法保存'
+            : status.reason;
       throw new CompatibilityError(`${specific ?? '当前 DSH 版本不允许写入'}；操作已阻止。`);
     }
   }

@@ -8,8 +8,9 @@ await check('Host registers both tools and every settings route using real Cordi
   t.after(() => host.close());
   assert.equal(host.fiber.state, 2);
   assert.deepEqual([...host.tools.keys()].sort(), ['dsh_manage_mcp_servers', 'dsh_manage_skills']);
-  assert.equal(host.routes.size, 12);
-  for (const method of ['mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled', 'mcp.set-tool-disabled']) {
+  assert.equal(host.routes.size, 16);
+  for (const method of ['mcp.create', 'mcp.update', 'mcp.reset', 'mcp.remove', 'mcp.set-enabled', 'mcp.set-tool-disabled',
+    'skills.save', 'skills.remove', 'skills.set-enabled', 'skills.reveal']) {
     assert.ok(host.routes.has('/api/mcp-skill-manager.' + method), method);
   }
   assert.equal(host.routes.has('/api/mcp-skill-manager.hooks.list'), false, 'The Hook surface is gone');
@@ -19,12 +20,12 @@ await check('Web arrival and removal do not stop Host tools or leak routes', asy
   const host = await fixture({ web: false });
   t.after(() => host.close());
   await host.attachWeb();
-  assert.equal(host.routes.size, 12);
+  assert.equal(host.routes.size, 16);
   await host.detachWeb();
   assert.equal(host.routes.size, 0);
   assert.equal(host.tools.size, 2);
   await host.attachWeb();
-  assert.equal(host.routes.size, 12);
+  assert.equal(host.routes.size, 16);
 });
 
 await check('Disposal removes owned routes, tools and Runtime Skills', async () => {
@@ -144,6 +145,7 @@ await check('A shadowed Runtime Skill cannot be offered or removed as an externa
   assert.equal(rows.length, 1);
   assert.equal(rows[0].source, 'project');
   assert.equal(rows[0].canUnregister, false);
+  assert.deepEqual(rows[0].shadowed.map((entry) => entry.source), ['runtime'], 'The losing entry is named, not dropped');
   const denied = await host.rpc('skills.unregister', { name: 'shared-skill' });
   assert.equal(denied.ok, false);
   assert.equal(host.runtime.has('shared-skill'), true);
@@ -175,9 +177,13 @@ await check('Concurrent unregistration cannot dispose one Runtime Skill twice', 
 await check('The skills list hides paths that are URLs and reports complete catalogs', async (t) => {
   const host = await fixture({ skillRows: { profile: [localSkill, { ...localSkill, name: 'remote-skill', path: 'https://example.invalid/SKILL.md' }] } });
   t.after(() => host.close());
-  const rows = (await host.rpc('skills.list')).value.skills;
+  const value = (await host.rpc('skills.list')).value;
+  const rows = value.skills;
   assert.equal(rows.find((row) => row.name === 'fixture-skill').path, '/fixture/SKILL.md');
   assert.equal(rows.find((row) => row.name === 'remote-skill').path, undefined);
+  assert.equal(rows.find((row) => row.name === 'fixture-skill').editable, false, 'A file outside every writable root gets no file actions');
+  assert.deepEqual(value.roots.map((root) => root.source).sort(), ['user-agents', 'user-dsh']);
+  assert.deepEqual(value.disabled, []);
   assert.equal((await host.rpc('skills.get', { name: 'fixture-skill' })).value.skill.content, localSkill.content);
 });
 
@@ -222,4 +228,5 @@ await check('Both optional DSH peers accept the verified baselines', async () =>
   assert.equal(manifest.dependencies.yaml, '^2.9.0');
   assert.equal(manifest.dependencies['@deepseek-ai/dsh-hooks-claude-code'], undefined, 'Hook dependencies are gone');
   assert.equal(manifest.files.includes('managed-hooks.js'), false);
+  assert.equal(manifest.files.includes('skill-files.js'), true);
 });

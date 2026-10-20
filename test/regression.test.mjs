@@ -33,7 +33,8 @@ const mark = (message) => appendFileSync(progress, message + '\n');
 const sources = [
   ['host.mjs', 'index.js'], ['client.js', 'client.js'], ['discovery.js', 'discovery.js'],
   ['compatibility.js', 'compatibility.js'], ['mcp-config.js', 'mcp-config.js'],
-  ['mcp-patch.js', 'mcp-patch.js'], ['mcp-write.js', 'mcp-write.js'], ['tool-guards.js', 'tool-guards.js'], ['package.json', 'package.json'],
+  ['mcp-patch.js', 'mcp-patch.js'], ['mcp-write.js', 'mcp-write.js'], ['tool-guards.js', 'tool-guards.js'],
+  ['skill-files.js', 'skill-files.js'], ['package.json', 'package.json'],
 ];
 const hashes = {};
 for (const [fixture, source] of sources) {
@@ -230,7 +231,19 @@ function createProfile(options = {}) {
   }
   reconcile();
 
-  const loader = { entries: () => [...entries.values()] };
+  // Skill writes must never reach the real homes, so every fixture gets its own provider row.
+  const skillFilesystem = options.skillFilesystem ?? {
+    dshHome: mkdtempSync(join(tmpdir(), 'dsh-home-')),
+    agentsHome: mkdtempSync(join(tmpdir(), 'dsh-agents-')),
+  };
+  const loader = {
+    entries: () => [
+      ...entries.values(),
+      ...(skillFilesystem === null ? [] : [{
+        options: { id: 'fixture-skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem', config: clone(skillFilesystem) },
+      }]),
+    ],
+  };
 
   const hmr = {
     async runExclusive(operation) {
@@ -281,6 +294,7 @@ function createProfile(options = {}) {
     configEditor,
     hmr,
     trace,
+    skillFilesystem,
     readPatch,
     writePatch(text) { writeFileSync(patchPath, text, 'utf8'); },
     addBase(row) { base.push(clone(row)); reconcile(); },
@@ -399,6 +413,9 @@ async function fixture(options = {}) {
 
   return {
     ctx, fiber, tools, routes, runtime, trace, profile, skills, connection, call, rpc, guardedCall: toolsService.guardedCall,
+    /** The two writable skill roots the fixture's provider row resolves to. */
+    skillRoot: (which = 'dsh') => join(profile.skillFilesystem[which === 'dsh' ? 'dshHome' : 'agentsHome'], 'skills'),
+    skillHome: () => profile.skillFilesystem.dshHome,
     async attachWeb() { removeConnection = ctx.reflect.provide('connection', connection); await flush(); },
     async detachWeb() { if (removeConnection) { await removeConnection(); removeConnection = undefined; } await flush(); },
     async close() { await fiber.dispose(); await fiber.await(); },
@@ -529,6 +546,22 @@ async function page(t, host, options = {}) {
       assert.equal(!!node.props.disabled, false, "Switch must be enabled: " + tool);
       await act(async () => { await node.props.onClick(); await flush(); });
     },
+    /** Every file button on the page, keyed by the path it acts on. */
+    pathButtons() {
+      return renderer.root.findAll((node) => node.props?.className === "dsh-msm-path")
+        .map((node) => ({ path: text(node), title: node.props.title }));
+    },
+    async reveal(path) {
+      const node = renderer.root.findAll((candidate) => candidate.props?.className === "dsh-msm-path"
+        && text(candidate) === path)[0];
+      assert.ok(node, "Expected a path button: " + path);
+      await act(async () => { await node.props.onClick(); await flush(); });
+    },
+    /** Rows the page marked as hidden, so a disabled skill is not mistaken for a missing one. */
+    offRows() {
+      return renderer.root.findAll((node) => node.type === "article"
+        && node.props.className?.includes("dsh-msm-off")).map(text);
+    },
     async fill(values) {
       await act(async () => { for (const [label, value] of Object.entries(values)) {
         const field = helpers.field(label);
@@ -551,7 +584,9 @@ async function page(t, host, options = {}) {
     statuses() { return renderer.root.findAllByProps({ role: "status" }).map(text); },
     content() { return text(renderer.root); },
     mutations() {
-      return requests.filter(({ method }) => ["mcp.create", "mcp.update", "mcp.reset", "mcp.remove", "mcp.set-enabled", "mcp.set-tool-disabled", "skills.register", "skills.unregister"].includes(method));
+      return requests.filter(({ method }) => ["mcp.create", "mcp.update", "mcp.reset", "mcp.remove", "mcp.set-enabled",
+        "mcp.set-tool-disabled", "skills.register", "skills.unregister", "skills.save", "skills.remove",
+        "skills.set-enabled", "skills.reveal"].includes(method));
     },
   };
   return helpers;

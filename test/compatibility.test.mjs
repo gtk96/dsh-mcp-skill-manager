@@ -28,7 +28,7 @@ await check('Compatibility reports version and methods without invoking business
   assert.equal(result.value.runtimeVersion, baselineRuntimeVersion);
   assert.equal(result.value.pluginVersion, packageFixture.version);
   assert.equal(result.value.versionStatus, 'tested');
-  assert.deepEqual(result.value.writes, { mcp: true, guards: true, skills: true });
+  assert.deepEqual(result.value.writes, { mcp: true, guards: true, skills: true, skillFiles: true });
   assert.equal(result.value.checks, 'method-presence-only');
   assert.equal(host.profile.trace.edits + host.trace.registrations + host.trace.snapshots.length, 0);
 });
@@ -40,7 +40,7 @@ for (const version of ['0.2.0-rc.2', '0.2.1-rc.2']) {
     t.after(() => host.close());
     const status = (await host.rpc('compatibility.status')).value;
     assert.equal(status.versionStatus, 'tested');
-    assert.deepEqual(status.writes, { mcp: true, guards: true, skills: true });
+    assert.deepEqual(status.writes, { mcp: true, guards: true, skills: true, skillFiles: true });
     const edited = await host.rpc('mcp.update', { entryId: 'mcp-probe', patch: { toolCallTimeoutMs: 60000 } });
     assert.equal(edited.ok, true, JSON.stringify(edited));
     const created = await host.rpc('mcp.create', { serverName: 'extra', transport: 'stdio', command: 'npx' });
@@ -61,7 +61,7 @@ for (const version of ['0.2.1-alpha.4', '0.2.1-rc.3', '1.0.0', undefined, 'not-a
     const status = await host.rpc('compatibility.status');
     assert.equal(status.ok, true);
     assert.equal(status.value.versionStatus, typeof version === 'string' && version !== 'not-a-version' ? 'unverified' : 'unknown');
-    assert.deepEqual(status.value.writes, { mcp: false, guards: false, skills: false });
+    assert.deepEqual(status.value.writes, { mcp: false, guards: false, skills: false, skillFiles: false });
     for (const [method, args] of mutations) {
       const result = await host.rpc(method, args);
       assert.equal(result.ok, false, method);
@@ -85,7 +85,7 @@ await check('Missing config edit blocks only MCP writes and preserves reads and 
   host.ctx.get('configEditor').edit = undefined;
   const status = (await host.rpc('compatibility.status')).value;
   assert.equal(status.capabilities.configEdit, false);
-  assert.deepEqual(status.writes, { mcp: false, guards: true, skills: true });
+  assert.deepEqual(status.writes, { mcp: false, guards: true, skills: true, skillFiles: true });
   assert.equal((await host.rpc('mcp.discover')).ok, true);
   assert.equal((await host.rpc(...mutations[0])).error.code, 'MCP_SKILL_MANAGER_INCOMPATIBLE');
   assert.equal((await host.rpc('mcp.create', { serverName: 'nope', transport: 'stdio', command: 'npx' })).error.code, 'MCP_SKILL_MANAGER_INCOMPATIBLE');
@@ -99,7 +99,7 @@ await check('Missing Runtime register blocks only Skill writes', async (t) => {
   t.after(() => host.close());
   host.skills.register = undefined;
   const status = (await host.rpc('compatibility.status')).value;
-  assert.deepEqual(status.writes, { mcp: true, guards: true, skills: false });
+  assert.deepEqual(status.writes, { mcp: true, guards: true, skills: false, skillFiles: true });
   assert.equal((await host.rpc(...mutations[1])).error.code, 'MCP_SKILL_MANAGER_INCOMPATIBLE');
   assert.equal((await host.rpc(...mutations[0])).ok, true);
   assert.equal(host.trace.registrations, 0);
@@ -111,7 +111,7 @@ await check('A profile without a patch file cannot add or remove servers', async
   host.ctx.get('profileContext').patchPath = undefined;
   const status = (await host.rpc('compatibility.status')).value;
   assert.equal(status.capabilities.patchWrite, false);
-  assert.deepEqual(status.writes, { mcp: false, guards: true, skills: true });
+  assert.deepEqual(status.writes, { mcp: false, guards: true, skills: true, skillFiles: true });
   const created = await host.rpc('mcp.create', { serverName: 'nope', transport: 'stdio', command: 'npx' });
   assert.equal(created.ok, false);
 });
